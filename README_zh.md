@@ -22,7 +22,7 @@
 ### Git Submodule
 
 ```bash
-git submodule add https://github.com/xxx/tickey.git
+git submodule add https://github.com/zhijian-yan/tickey.git
 ```
 
 ### 直接集成
@@ -43,7 +43,8 @@ tkey_t key;
 ### 2. 初始化按键
 
 ```c
-tkey_init(&key, TKEY_CB_MODE_DEFERRED, key_event_cb, key_read, NULL);
+tkey_init(&key, TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+          tkey_read_callback, NULL);
 ```
 
 ### 3. 实现读取回调
@@ -73,7 +74,7 @@ void tkey_event_callback(tkey_t *key, tkey_event_t event, uint8_t press_count,
 
 ```c
 void timer_callback(void) {
-    tkey_scan(key, sizeof(key) / sizeof(tkey_t));
+    tkey_scan(&key, 1);
 }
 ```
 
@@ -85,7 +86,7 @@ while (1) {
 }
 ```
 
-### 3. 完整示例
+### 7. 完整示例
 
 ```c
 #include "tickey.h"
@@ -118,10 +119,10 @@ void timer_callback(void) {
 
 int main(void) {
     hardware_init();
-    tkey_init(&key[0], tkey_event_callback, tkey_read_callback,
-              (void *)key1_pin);
-    tkey_init(&key[1], tkey_event_callback, tkey_read_callback,
-              (void *)key2_pin);
+    tkey_init(&key[0], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+              tkey_read_callback, (void *)key1_pin);
+    tkey_init(&key[1], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+              tkey_read_callback, (void *)key2_pin);
     while (1) {
         tkey_dispatch(8);
     }
@@ -170,37 +171,30 @@ tickey 采用两状态有限状态机（FSM）设计：
        | UNPRESSED   |             |
        +-------------+             |
               |                    |
-              | PRESS              |
+              | PRESS /            |
               | MULTI_PRESS        |
               v                    |
        +-------------+             |
        |  PRESSED    |-------------+
        +-------------+
               |
-              |
-              | press_ticks ==
-              | long_press_duration_ticks
-              |
-              v
-       +-------------+
-       | LONG_PRESS  |
-       +-------------+
-              |
-              |
               | release
-              |
               v
        +-------------+
        | UNPRESSED   |
        +-------------+
 
+长按不是独立状态，而是 PRESSED 状态下的一个事件：
+
+* 当 `press_ticks == long_press_duration_ticks` 时触发 `TKEY_EVENT_LONG_PRESS`（状态不变）
+* 长按期间释放时触发 `TKEY_EVENT_LONG_RELEASE`
+
 状态说明：
 
-| 状态         | 描述      |
+| 状态        | 描述      |
 | ---------- | ------- |
 | UNPRESSED  | 按键未按下   |
 | PRESSED    | 按键已按下   |
-| LONG_PRESS | 长按事件已触发 |
 
 对应事件：
 
@@ -212,6 +206,8 @@ tickey 采用两状态有限状态机（FSM）设计：
 | TKEY_EVENT_LONG_RELEASE  | 长按后释放    |
 | TKEY_EVENT_MULTI_PRESS   | 第二次及以上按下 |
 | TKEY_EVENT_MULTI_RELEASE | 多击释放     |
+| TKEY_EVENT_PRESS_TIMEOUT | 按下期间点击序列超时 |
+| TKEY_EVENT_RELEASE_TIMEOUT | 释放期间点击序列超时 |
 
 ---
 
@@ -334,7 +330,7 @@ Execute Callback
 
 ### 并发模型
 
-tikey 内部采用`SPSC(Single Producer Single Consumer)`模型
+tickey 内部采用 `SPSC (Single Producer Single Consumer)` 模型
 
 **生产者**
 
@@ -346,7 +342,7 @@ tikey 内部采用`SPSC(Single Producer Single Consumer)`模型
 
 事件队列通过锁抽象保护
 
-tikey 通过两个接口抽象平台相关的锁实现：
+tickey 通过两个接口抽象平台相关的锁实现：
 
 ```c
 static inline int tkey_lock(void)
@@ -355,25 +351,23 @@ static inline int tkey_lock(void)
     return 0;
 }
 
-static inline void tkey_unlock(int stim_lock_state)
+static inline void tkey_unlock(int tkey_lock_state)
 {
     /* Restore interrupt state */
-    (void)stim_lock_state;
+    (void)tkey_lock_state;
 }
 ```
 
-以下 API 可在任意执行上下文中调用：
+以下 API 内部使用锁保护，在正确实现 `tkey_lock()`/`tkey_unlock()` 的前提下可在任意执行上下文中调用：
 
 * `tkey_set_debounce()`
 * `tkey_set_long_press_duration()`
 * `tkey_set_multi_press_timeout()`
 
-以下 API 必须遵循单消费者模型：
+以下 API 必须遵循 SPSC 模型，即同一时刻只能由一个执行上下文调用：
 
 * `tkey_scan()`
 * `tkey_dispatch()`
-
-即同一时刻只能由一个执行上下文调用
 
 ## API参考
 
@@ -412,19 +406,19 @@ int tkey_scan(tkey_t keys[], uint32_t key_count);
 
 扫描按键状态
 
-* 对于 `STIM_CB_MODE_DEFERRED`，产生事件并放入队列
-* 对于 `STIM_CB_MODE_IMMEDIATE`，直接执行回调
+* 对于 `TKEY_CB_MODE_DEFERRED`，产生事件并放入队列
+* 对于 `TKEY_CB_MODE_IMMEDIATE`，直接执行回调
 
 **参数**
 
-* `key`：：按键对象数组
+* `keys`：按键对象数组
 * `key_count`：按键对象数量
 
 **返回值**
 
 * `0`：成功
 * `-TKEY_EINVAL`：参数非法
-* `-TKEY_EAGAIN`：队列已满
+* `-TKEY_EAGAIN`：队列已满（多个按键入队失败时错误码按位或合并）
 
 ---
 
@@ -508,15 +502,15 @@ int tkey_set_multi_press_timeout(tkey_t *key,
 
 ### TKEY_DEFAULT_DEBOUNCE
 
-默认的消抖时间
+默认的消抖时间，默认值：`1`
 
 ### TKEY_DEFAULT_LONG_PRESS_THRESHOLD
 
-默认的长按持续时间
+默认的长按持续时间，默认值：`50`
 
 ### TKEY_DEFAULT_MULTI_PRESS_INTERVAL
 
-默认的多次按下间隔时间
+默认的多次按下间隔时间，默认值：`30`
 
 ### TKEY_QUEUE_SIZE
 

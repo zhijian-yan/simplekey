@@ -22,7 +22,7 @@ Lightweight Embedded Key Scanning Library
 ### Git Submodule
 
 ```bash
-git submodule add https://github.com/xxx/tickey.git
+git submodule add https://github.com/zhijian-yan/tickey.git
 ```
 
 ### Direct Integration
@@ -43,7 +43,8 @@ tkey_t key;
 ### 2. Initialize the Key
 
 ```c
-tkey_init(&key, TKEY_CB_MODE_DEFERRED, key_event_cb, key_read, NULL);
+tkey_init(&key, TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+          tkey_read_callback, NULL);
 ```
 
 ### 3. Implement the Read Callback
@@ -73,7 +74,7 @@ void tkey_event_callback(tkey_t *key, tkey_event_t event, uint8_t press_count,
 
 ```c
 void timer_callback(void) {
-    tkey_scan(key, sizeof(key) / sizeof(tkey_t));
+    tkey_scan(&key, 1);
 }
 ```
 
@@ -118,10 +119,10 @@ void timer_callback(void) {
 
 int main(void) {
     hardware_init();
-    tkey_init(&key[0], tkey_event_callback, tkey_read_callback,
-              (void *)key1_pin);
-    tkey_init(&key[1], tkey_event_callback, tkey_read_callback,
-              (void *)key2_pin);
+    tkey_init(&key[0], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+              tkey_read_callback, (void *)key1_pin);
+    tkey_init(&key[1], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
+              tkey_read_callback, (void *)key2_pin);
     while (1) {
         tkey_dispatch(8);
     }
@@ -171,38 +172,31 @@ tickey uses a lightweight finite state machine (FSM).
        | UNPRESSED   |             |
        +-------------+             |
               |                    |
-              | PRESS              |
+              | PRESS /            |
               | MULTI_PRESS        |
               v                    |
        +-------------+             |
        |  PRESSED    |-------------+
        +-------------+
               |
-              |
-              | press_ticks ==
-              | long_press_duration_ticks
-              |
-              v
-       +-------------+
-       | LONG_PRESS  |
-       +-------------+
-              |
-              |
               | release
-              |
               v
        +-------------+
        | UNPRESSED   |
        +-------------+
 ```
 
+Long press is **not** a separate state, but an event raised in the PRESSED state:
+
+* When `press_ticks == long_press_duration_ticks`, `TKEY_EVENT_LONG_PRESS` is raised (state unchanged)
+* Releasing during a long press raises `TKEY_EVENT_LONG_RELEASE`
+
 #### States
 
-| State      | Description                         |
-| ---------- | ----------------------------------- |
-| UNPRESSED  | Key is released                     |
-| PRESSED    | Key is currently pressed            |
-| LONG_PRESS | Long-press event has been triggered |
+| State      | Description              |
+| ---------- | ------------------------ |
+| UNPRESSED  | Key is released          |
+| PRESSED    | Key is currently pressed |
 
 #### Events
 
@@ -214,6 +208,8 @@ tickey uses a lightweight finite state machine (FSM).
 | TKEY_EVENT_LONG_RELEASE  | Release after long press     |
 | TKEY_EVENT_MULTI_PRESS   | Second or subsequent press   |
 | TKEY_EVENT_MULTI_RELEASE | Release after multi-press    |
+| TKEY_EVENT_PRESS_TIMEOUT | Click sequence timed out while pressed  |
+| TKEY_EVENT_RELEASE_TIMEOUT | Click sequence timed out while released |
 
 ---
 
@@ -362,25 +358,23 @@ static inline int tkey_lock(void)
     return 0;
 }
 
-static inline void tkey_unlock(int lock_state)
+static inline void tkey_unlock(int tkey_lock_state)
 {
     /* Restore interrupt state */
-    (void)lock_state;
+    (void)tkey_lock_state;
 }
 ```
 
-The following APIs are safe to call from any execution context:
+The following APIs are internally protected by the lock abstraction and are safe to call from any execution context, provided that `tkey_lock()`/`tkey_unlock()` are implemented correctly:
 
 * `tkey_set_debounce()`
 * `tkey_set_long_press_duration()`
 * `tkey_set_multi_press_timeout()`
 
-The following APIs must follow the single-producer/single-consumer model:
+The following APIs must follow the SPSC model: only one execution context may call each function at a time:
 
 * `tkey_scan()`
 * `tkey_dispatch()`
-
-Only one execution context may call each function at a time.
 
 ## API Reference
 
@@ -428,7 +422,7 @@ Scan key states.
 
 * `0` - Success
 * `-TKEY_EINVAL` - Invalid parameter
-* `-TKEY_EAGAIN` - Queue full
+* `-TKEY_EAGAIN` - Queue full (when multiple keys fail to enqueue, the error codes are combined with bitwise OR)
 
 ---
 
@@ -485,15 +479,15 @@ Set multi-press timeout interval.
 
 ### TKEY_DEFAULT_DEBOUNCE
 
-Default debounce duration.
+Default debounce duration. Default: `1`
 
-### TKEY_DEFAULT_LONG_PRESS_DURATION
+### TKEY_DEFAULT_LONG_PRESS_THRESHOLD
 
-Default long-press duration.
+Default long-press duration. Default: `50`
 
-### TKEY_DEFAULT_MULTI_PRESS_TIMEOUT
+### TKEY_DEFAULT_MULTI_PRESS_INTERVAL
 
-Default multi-press timeout.
+Default multi-press timeout. Default: `30`
 
 ### TKEY_QUEUE_SIZE
 
