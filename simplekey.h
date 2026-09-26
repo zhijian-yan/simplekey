@@ -20,17 +20,20 @@ static inline void skey_unlock(int skey_lock_state) {
     (void)skey_lock_state;
 }
 
-#define SKEY_EVENT_PRESS_DEFER (1U << 0)
-#define SKEY_EVENT_PRESS_EAGER (1U << 1)
-#define SKEY_EVENT_RELEASE_DEFER (1U << 2)
-#define SKEY_EVENT_RELEASE_EAGER (1U << 3)
-#define SKEY_EVENT_LONG_PRESS (1U << 4)
-#define SKEY_EVENT_LONG_RELEASE (1U << 5)
-#define SKEY_EVENT_MULTI_PRESS_TIMEOUT (1U << 6)
+#define SKEY_MAX_TICK                    (0xFFFF)
+#define SKEY_MAX_COUNT                   (0xFF)
+
+#define SKEY_EVENT_PRESS_DEFER           (1U << 0)
+#define SKEY_EVENT_PRESS_EAGER           (1U << 1)
+#define SKEY_EVENT_RELEASE_DEFER         (1U << 2)
+#define SKEY_EVENT_RELEASE_EAGER         (1U << 3)
+#define SKEY_EVENT_LONG_PRESS            (1U << 4)
+#define SKEY_EVENT_LONG_RELEASE          (1U << 5)
+#define SKEY_EVENT_MULTI_PRESS_TIMEOUT   (1U << 6)
 #define SKEY_EVENT_MULTI_RELEASE_TIMEOUT (1U << 7)
 
-#define SKEY_EVENT_SET(event, value) (event |= value)
-#define SKEY_EVENT_GET(event, value) ((event) & value)
+#define skey_event_set(event, value)     (event |= value)
+#define skey_event_get(event, value)     ((event) & value)
 
 typedef enum {
     SKEY_CALLBACK_MODE_DEFERRED = 0,
@@ -74,10 +77,10 @@ typedef struct {
     uint16_t multi_press_timeout_ticks;
     uint16_t multi_release_timeout_ticks;
     skey_queue_t queue;
-} skey_config_t;
+} skey_group_t;
 
-uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_config_t *config);
-void skey_dispatch(uint8_t max_event_num, skey_config_t *config);
+uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
+void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
 
 #ifdef __cplusplus
 }
