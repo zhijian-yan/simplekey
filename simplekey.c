@@ -42,23 +42,19 @@
 static int skey_queue_send(skey_queue_t *queue, const skey_message_t *message) {
     uint8_t w = queue->write_index;
     uint8_t next = (w + 1) & (queue->length - 1);
-    if (next == queue->read_index) {
+    if (next == queue->read_index)
         return 1;
-    } else {
-        queue->buffer[w] = *message;
-        queue->write_index = next;
-    }
+    queue->buffer[w] = *message;
+    queue->write_index = next;
     return 0;
 }
 
 static int skey_queue_receive(skey_queue_t *queue, skey_message_t *message) {
     uint8_t r = queue->read_index;
-    if (r == queue->write_index) {
+    if (r == queue->write_index)
         return 1;
-    } else {
-        *message = queue->buffer[r];
-        queue->read_index = (r + 1) & (queue->length - 1);
-    }
+    *message = queue->buffer[r];
+    queue->read_index = (r + 1) & (queue->length - 1);
     return 0;
 }
 
@@ -211,8 +207,8 @@ uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group) {
     while (key_num > 0) {
         key_num -= 1;
         uint8_t level = group->read_cb(keys[key_num].user_data);
-        int skey_lock_state = skey_lock();
         skey_message_t message;
+        int skey_lock_state = skey_lock();
         message.event = skey_scan_signal(&keys[key_num], group, level);
         message.event = skey_gesture_proc(&keys[key_num], group, message.event);
         message.press_count = keys[key_num].press_count;
