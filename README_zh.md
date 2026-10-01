@@ -1,4 +1,4 @@
-<h1 align="center">tickey</h1>
+<h1 align="center">simplekey</h1>
 
 <p align="center">
 <a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
@@ -8,12 +8,14 @@
 轻量级嵌入式按键扫描库
 </p>
 
-## Features
+## 特性
 
-* 支持按键消抖
-* 支持检测短按、长按、多次按下等状态
-* 支持延迟回调与立即回调
-* SPSC (单生产者单消费者) 事件队列
+* 分组式按键管理，同一分组内的按键共享回调、配置与事件队列
+* 信号层 + 手势层双层状态机
+* 按下与释放消抖模式可独立配置（立即 / 延迟）
+* 支持消抖、长按、多击与超时检测
+* 支持立即回调与延迟回调
+* 基于用户提供缓冲区的 SPSC 事件队列
 * 无动态内存分配
 * 平台无关的锁抽象
 
@@ -22,109 +24,147 @@
 ### Git Submodule
 
 ```bash
-git submodule add https://github.com/zhijian-yan/tickey.git
+git submodule add https://github.com/zhijian-yan/simplekey.git
 ```
 
 ### 直接集成
 
 将以下文件加入工程：
 
-* `tickey.c`
-* `tickey.h`
+* `simplekey.c`
+* `simplekey.h`
 
 ## 快速开始
 
-### 1. 创建按键
+### 1. 定义按键与分组
 
 ```c
-tkey_t key;
+#define KEY_NUM 2
+
+skey_t keys[KEY_NUM];
+skey_group_t group;
+skey_message_t queue_buffer[16];
 ```
 
-### 2. 初始化按键
+`skey_t` 与 `skey_group_t` 均需零初始化（声明为全局或静态变量即可自动满足）
+
+### 2. 配置分组
 
 ```c
-tkey_init(&key, TKEY_CB_MODE_DEFERRED, tkey_event_callback,
-          tkey_read_callback, NULL);
+group.read_cb = skey_read_cb;
+group.event_cb = skey_event_cb;
+group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
+
+group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+
+group.press_debounce_ticks = 1;
+group.release_debounce_ticks = 1;
+group.long_press_expired_ticks = 100;
+group.multi_press_timeout_ticks = 30;
+group.multi_release_timeout_ticks = 30;
+
+group.queue.buffer = queue_buffer;
+group.queue.length = 16;
 ```
 
 ### 3. 实现读取回调
 
 ```c
-int tkey_read_callback(void *user_data) {
-    if (gpio_get_level((int)user_data) == PRESSED_LEVEL)
-        return 1;
-    else
+uint8_t skey_read_cb(void *user_data) {
+    /* 返回 0 表示按下，非 0 表示释放 */
+    if (gpio_get_level((int)user_data) == 0)
         return 0;
+    return 1;
 }
 ```
 
 ### 4. 实现事件回调
 
 ```c
-void tkey_event_callback(tkey_t *key, tkey_event_t event, uint8_t press_count,
-                         void *user_data) {
-    if (event & TKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
+    if (event & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
-    else if (event & TKEY_EVENT_RELEASE_TIMEOUT)
-        printf("key[%d] pressed:[%d]\r\n", (int)user_data, press_count);
+
+    if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+        printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 ```
 
-### 5. 扫描按键
+`event` 为位掩码，同一次回调中可能包含多个事件，请使用按位与进行判断
+
+### 5. 周期扫描按键
 
 ```c
 void timer_callback(void) {
-    tkey_scan(&key, 1);
+    /* 建议以固定周期调用，例如每 10ms 一次 */
+    skey_scan(keys, KEY_NUM, &group);
 }
 ```
 
-### 6. 分发按键事件
+### 6. 分发事件
 
 ```c
 while (1) {
-    tkey_dispatch(8);
+    skey_dispatch(8, &group);
 }
 ```
+
+仅 `SKEY_CALLBACK_MODE_DEFERRED` 模式需要调用 `skey_dispatch()`
 
 ### 7. 完整示例
 
 ```c
-#include "tickey.h"
+#include "simplekey.h"
 #include <stdio.h>
 
-#define key1_pin 1
-#define key2_pin 2
+#define KEY_NUM 2
+#define KEY1_PIN 1
+#define KEY2_PIN 2
 #define PRESSED_LEVEL 0
 
-tkey_t key[2];
+skey_t keys[KEY_NUM];
+skey_group_t group;
+skey_message_t queue_buffer[16];
 
-int tkey_read_callback(void *user_data) {
+uint8_t skey_read_cb(void *user_data) {
     if (gpio_get_level((int)user_data) == PRESSED_LEVEL)
-        return 1;
-    else
         return 0;
+    return 1;
 }
 
-void tkey_event_callback(tkey_t *key, tkey_event_t event, uint8_t press_count,
-                         void *user_data) {
-    if (event & TKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
+    if (event & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
-    else if (event & TKEY_EVENT_RELEASE_TIMEOUT)
-        printf("key[%d] pressed:[%d]\r\n", (int)user_data, press_count);
+    else if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+        printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 
 void timer_callback(void) {
-    tkey_scan(key, sizeof(key) / sizeof(tkey_t));
+    skey_scan(keys, KEY_NUM, &group);
 }
 
 int main(void) {
     hardware_init();
-    tkey_init(&key[0], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
-              tkey_read_callback, (void *)key1_pin);
-    tkey_init(&key[1], TKEY_CB_MODE_DEFERRED, tkey_event_callback,
-              tkey_read_callback, (void *)key2_pin);
+
+    keys[0].user_data = (void *)KEY1_PIN;
+    keys[1].user_data = (void *)KEY2_PIN;
+
+    group.read_cb = skey_read_cb;
+    group.event_cb = skey_event_cb;
+    group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
+    group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.press_debounce_ticks = 1;
+    group.release_debounce_ticks = 1;
+    group.long_press_expired_ticks = 100;
+    group.multi_press_timeout_ticks = 30;
+    group.multi_release_timeout_ticks = 30;
+    group.queue.buffer = queue_buffer;
+    group.queue.length = 16;
+
     while (1) {
-        tkey_dispatch(8);
+        skey_dispatch(8, &group);
     }
     return 0;
 }
@@ -132,129 +172,160 @@ int main(void) {
 
 ## 设计原理
 
-tickey 采用周期扫描（Polling）方式实现按键检测
+simplekey 采用周期扫描（Polling）方式实现按键检测
 
 用户需要以固定周期调用：
 
 ```c
-tkey_scan(keys, key_count);
+skey_scan(keys, key_num, &group);
 ```
 
 例如每 10ms 调用一次
 
-库内部维护：
+### 分组模型
 
-* 按键状态机
-* 消抖计数器
-* 长按计数器
-* 多击计数器
+按键以“分组（group）”为单位进行管理
 
-每次扫描时首先通过用户提供的读取回调获取按键电平：
+* `skey_t` 描述单颗按键的运行时状态
+* `skey_group_t` 描述一组按键共享的读取回调、事件回调、消抖模式、时序阈值与事件队列
 
-```c
-read_value = key->read_cb(key->user_data);
-```
+一次 `skey_scan()` 调用会对传入数组中的每颗按键依次执行：
 
-随后根据状态机更新按键状态并生成对应事件
-
----
-
-### 状态机
-
-tickey 采用两状态有限状态机（FSM）设计：
-
-                     debounce
-              +--------------------+
-              |                    |
-              v                    |
-       +-------------+             |
-       | UNPRESSED   |             |
-       +-------------+             |
-              |                    |
-              | PRESS /            |
-              | MULTI_PRESS        |
-              v                    |
-       +-------------+             |
-       |  PRESSED    |-------------+
-       +-------------+
-              |
-              | release
-              v
-       +-------------+
-       | UNPRESSED   |
-       +-------------+
-
-长按不是独立状态，而是 PRESSED 状态下的一个事件：
-
-* 当 `press_ticks == long_press_duration_ticks` 时触发 `TKEY_EVENT_LONG_PRESS`（状态不变）
-* 长按期间释放时触发 `TKEY_EVENT_LONG_RELEASE`
-
-状态说明：
-
-| 状态        | 描述      |
-| ---------- | ------- |
-| UNPRESSED  | 按键未按下   |
-| PRESSED    | 按键已按下   |
-
-对应事件：
-
-| 事件                       | 描述       |
-| ------------------------ | -------- |
-| TKEY_EVENT_PRESS         | 第一次按下    |
-| TKEY_EVENT_RELEASE       | 单击释放     |
-| TKEY_EVENT_LONG_PRESS    | 达到长按阈值   |
-| TKEY_EVENT_LONG_RELEASE  | 长按后释放    |
-| TKEY_EVENT_MULTI_PRESS   | 第二次及以上按下 |
-| TKEY_EVENT_MULTI_RELEASE | 多击释放     |
-| TKEY_EVENT_PRESS_TIMEOUT | 按下期间点击序列超时 |
-| TKEY_EVENT_RELEASE_TIMEOUT | 释放期间点击序列超时 |
-
----
-
-### 超时事件
-
-库内部同时维护：
+1. 通过 `group->read_cb()` 读取电平
+2. 信号层状态机进行采样与消抖
+3. 手势层状态机进行长按、多击与超时识别
+4. 产生事件并交由回调或事件队列处理
 
 ```text
-press_ticks
-    └── 消抖和长按检测
-
-multi_press_ticks
-    └── 多击超时检测
+             skey_scan()
+                  │
+        ┌─────────┴─────────┐
+        │  逐颗按键依次处理   │
+        ▼                   ▼
+    信号层 FSM          手势层 FSM
+  （采样 + 消抖）     （长按 / 多击 / 超时）
+        │                   │
+        └─────────┬─────────┘
+                  ▼
+              事件 event
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+   立即回调             事件队列
+ (IMMEDIATE)              │
+                          ▼
+                  skey_dispatch()
+                          │
+                          ▼
+                      延迟回调
 ```
 
-当：
+### 状态编码
 
-```c
-multi_press_ticks >= multi_press_timeout_ticks
+单颗按键的全部状态被编码在一个字节 `state` 中：
+
+| 位    | 字段      | 说明                                                         |
+| ---- | ------- | ---------------------------------------------------------- |
+| 0-2  | 信号层状态   | `IDLE` / `PRESS_DEBOUNCE` / `PRESSED` / `RELEASE_DEBOUNCE` / `RELEASED` |
+| 3-4  | 手势层状态   | `IDLE` / `PRESSED` / `RELEASED`                            |
+| 5    | `LONG_PRESSED`  | 已触发长按                                                      |
+| 6    | `MULTI_PRESSED` | 多击序列进行中                                                    |
+
+### 信号层状态机
+
+信号层负责按键采样与消抖，输入为用户读取回调返回的电平（`0` 表示按下，非 `0` 表示释放）
+
+```text
+          level == 0
+   IDLE ─────────────▶ PRESS_DEBOUNCE
+    ▲                        │ 消抖确认
+    │                        ▼
+    │                     PRESSED
+    │                        │ level != 0
+    │                        ▼
+    └──── RELEASED ◀──── RELEASE_DEBOUNCE
+               消抖确认
 ```
 
-时产生超时事件：
+| 当前状态             | 条件                                                       | 动作                                        |
+| ---------------- | -------------------------------------------------------- | ----------------------------------------- |
+| `IDLE`           | `level == 0`                                             | `ticks = 0`，→ `PRESS_DEBOUNCE`，产生 `PRESS_EAGER` |
+| `PRESS_DEBOUNCE` | `ticks >= press_debounce_ticks` 且 `level == 0`           | `ticks = 0`，→ `PRESSED`，产生 `PRESS_DEFER`  |
+| `PRESS_DEBOUNCE` | `ticks >= press_debounce_ticks` 且 `level != 0`           | 复位整个 `state`（判为抖动）                        |
+| `PRESS_DEBOUNCE` | 其它                                                       | `ticks++`                                 |
+| `PRESSED`        | `level != 0`                                             | `ticks = 0`，→ `RELEASE_DEBOUNCE`，产生 `RELEASE_EAGER` |
+| `PRESSED`        | 其它                                                       | `ticks++`（上限 `SKEY_MAX_TICK`）             |
+| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` 且 `level != 0`        | `ticks = 0`，→ `RELEASED`，产生 `RELEASE_DEFER` |
+| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` 且 `level == 0`        | 复位整个 `state`（判为抖动）                        |
+| `RELEASE_DEBOUNCE` | 其它                                                      | `ticks++`                                 |
+| `RELEASED`       | `level == 0`                                             | `ticks = 0`，手势层→ `IDLE`，→ `PRESS_DEBOUNCE`，产生 `PRESS_EAGER` |
+| `RELEASED`       | 其它                                                       | `ticks++`                                 |
 
-| 当前状态      | 产生事件                       |
-| --------- | -------------------------- |
-| PRESSED   | TKEY_EVENT_PRESS_TIMEOUT   |
-| UNPRESSED | TKEY_EVENT_RELEASE_TIMEOUT |
+### 手势层状态机
 
-超时事件不会改变状态机状态，仅用于通知用户当前点击序列已经结束
+手势层接收信号层事件，结合消抖模式进行手势识别，并输出长按、多击与超时事件
 
-通常用户可在：
-
-```c
-TKEY_EVENT_RELEASE_TIMEOUT
+```text
+   IDLE ──(按下事件)──▶ PRESSED ──(释放事件)──▶ RELEASED
+    ▲                                                │
+    │            序列结束（复位）                       │
+    └────────────────────────────────────────────────┘
 ```
 
-事件中判断：
+| 当前状态       | 条件                                                       | 动作                                                                              |
+| ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `IDLE`     | 按下事件（依 `press_db_mode` 选择 `PRESS_DEFER` / `PRESS_EAGER`） | → `PRESSED`；若 `MULTI_PRESSED` 已置位则 `press_count++`，否则 `press_count = 1` 并置位 `MULTI_PRESSED` |
+| `PRESSED`  | 释放事件（依 `release_db_mode` 选择 `RELEASE_DEFER` / `RELEASE_EAGER`） | → `RELEASED`                                                                    |
+| `PRESSED`  | 未置位 `LONG_PRESSED` 且 `ticks > long_press_expired_ticks`   | 置位 `LONG_PRESSED`，产生 `LONG_PRESS`                                               |
+| `PRESSED`  | 置位 `MULTI_PRESSED` 且 `ticks > multi_press_timeout_ticks`  | 清除 `MULTI_PRESSED`，产生 `MULTI_PRESS_TIMEOUT`                                     |
+| `RELEASED` | 置位 `LONG_PRESSED`                                        | 清除 `LONG_PRESSED`，产生 `LONG_RELEASE`                                             |
+| `RELEASED` | 置位 `MULTI_PRESSED` 且 `ticks > multi_release_timeout_ticks` | 清除 `MULTI_PRESSED`，产生 `MULTI_RELEASE_TIMEOUT`                                   |
+| `RELEASED` | 未置位 `MULTI_PRESSED` 且信号层处于 `RELEASED`                   | 复位整个 `state`（点击序列结束）                                                           |
 
-* 单击
-* 双击
-* 三击
-* 多次连续点击
+### 消抖模式
 
-例如：
+信号层在采样到电平跳变时以及消抖确认时会分别产生事件，手势层选择在哪个时机响应由消抖模式决定
+
+| 模式                            | 含义                                |
+| ----------------------------- | --------------------------------- |
+| `SKEY_DEBOUNCE_MODE_DEFER`    | 在消抖确认后响应（更抗抖动）                    |
+| `SKEY_DEBOUNCE_MODE_EAGER`    | 在检测到电平跳变时立即响应（延迟更低，抗抖动能力较弱）        |
+
+按下与释放可分别通过 `group.press_db_mode` 与 `group.release_db_mode` 独立配置
+
+### 事件
+
+| 事件                            | 说明                                                       |
+| ----------------------------- | -------------------------------------------------------- |
+| `SKEY_EVENT_PRESS_EAGER`      | 检测到按键电平变为“按下”（消抖确认前）                                |
+| `SKEY_EVENT_PRESS_DEFER`      | 按下消抖确认完成                                                 |
+| `SKEY_EVENT_RELEASE_EAGER`    | 检测到按键电平变为“释放”（消抖确认前）                                |
+| `SKEY_EVENT_RELEASE_DEFER`    | 释放消抖确认完成                                                 |
+| `SKEY_EVENT_LONG_PRESS`       | 按下持续时间超过 `long_press_expired_ticks`                     |
+| `SKEY_EVENT_LONG_RELEASE`     | 长按之后释放                                                   |
+| `SKEY_EVENT_MULTI_PRESS_TIMEOUT` | 按下期间，多击等待超过 `multi_press_timeout_ticks`                 |
+| `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` | 释放期间，多击等待超过 `multi_release_timeout_ticks`             |
+
+多个事件可能在同一次回调中同时产生，`event` 为多个事件的按位或结果
+
+### 计时
+
+`key->ticks` 在按下期间（`PRESSED`）与释放期间（`RELEASED`）累加，用于长按与超时判断
+
+```text
+ticks
+  ├── 按下期间累加
+  │     ├── long_press_expired_ticks     → 长按
+  │     └── multi_press_timeout_ticks    → 按下期间多击超时
+  │
+  └── 释放期间累加
+        └── multi_release_timeout_ticks  → 释放期间多击超时
+```
+
+通常用户在 `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` 事件中结合 `press_count` 判断单击、双击或多次点击：
 
 ```c
-if (event & TKEY_EVENT_RELEASE_TIMEOUT) {
+if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT) {
     switch (press_count) {
     case 1:
         printf("single click\n");
@@ -269,16 +340,14 @@ if (event & TKEY_EVENT_RELEASE_TIMEOUT) {
 }
 ```
 
----
-
 ### 回调执行模型
 
-tickey 支持两种回调模式。
+simplekey 支持两种回调模式
 
 #### Immediate Mode
 
 ```c
-TKEY_CB_MODE_IMMEDIATE
+SKEY_CALLBACK_MODE_IMMEDIATE
 ```
 
 事件产生后立即执行回调
@@ -294,15 +363,15 @@ Execute Callback
 特点：
 
 * 延迟最低
-* 无事件队列
+* 不使用事件队列
 
 #### Deferred Mode
 
 ```c
-TKEY_CB_MODE_DEFERRED
+SKEY_CALLBACK_MODE_DEFERRED
 ```
 
-事件首先进入内部队列：
+事件首先进入分组的事件队列：
 
 ```text
 Scan
@@ -312,7 +381,7 @@ Generate Event
 Push Queue
 ```
 
-随后由 `tkey_dispatch()` 统一分发：
+随后由 `skey_dispatch()` 统一分发：
 
 ```text
 Dispatch
@@ -326,215 +395,253 @@ Execute Callback
 * 回调运行在主循环或任务上下文
 * 避免耗时回调影响扫描实时性
 
----
+### 事件队列
+
+分组内的事件通过单生产者单消费者（SPSC）环形队列传递，缓冲区由用户提供：
+
+```c
+typedef struct {
+    skey_message_t *buffer;   /* 用户提供的缓冲区 */
+    uint8_t length;           /* 必须是 2 的幂（uint8_t 下最大为 128） */
+    volatile uint8_t write_index;
+    volatile uint8_t read_index;
+} skey_queue_t;
+```
+
+要求：
+
+* `buffer` 不为 `NULL` 时 `length` 必须为 2 的幂
+* `buffer` 为 `NULL` 时，延迟事件将被丢弃（立即模式不受影响）
+* 队列满时事件将被丢弃，`skey_scan()` 的返回值会累加丢弃数量
 
 ### 并发模型
 
-tickey 内部采用 `SPSC (Single Producer Single Consumer)` 模型
+simplekey 内部采用 `SPSC (Single Producer Single Consumer)` 模型
 
 **生产者**
 
-* tkey_scan()
+* `skey_scan()`
 
 **消费者**
 
-* tkey_dispatch()
+* `skey_dispatch()`
 
-事件队列通过锁抽象保护
+事件队列由 SPSC 模型保证安全，`skey_scan()` 在更新按键状态与生成事件时使用锁抽象保护临界区
 
-tickey 通过两个接口抽象平台相关的锁实现：
+simplekey 通过两个接口抽象平台相关的锁实现：
 
 ```c
-static inline int tkey_lock(void)
+static inline int skey_lock(void)
 {
     /* Disable interrupts if needed */
     return 0;
 }
 
-static inline void tkey_unlock(int tkey_lock_state)
+static inline void skey_unlock(int skey_lock_state)
 {
     /* Restore interrupt state */
-    (void)tkey_lock_state;
+    (void)skey_lock_state;
 }
 ```
 
-以下 API 内部使用锁保护，在正确实现 `tkey_lock()`/`tkey_unlock()` 的前提下可在任意执行上下文中调用：
-
-* `tkey_set_debounce()`
-* `tkey_set_long_press_duration()`
-* `tkey_set_multi_press_timeout()`
+默认实现为空操作，需要中断安全的平台可自行实现这两个接口
 
 以下 API 必须遵循 SPSC 模型，即同一时刻只能由一个执行上下文调用：
 
-* `tkey_scan()`
-* `tkey_dispatch()`
+* `skey_scan()`
+* `skey_dispatch()`
 
-## API参考
+## API 参考
 
-### tkey_init
-
-```c
-int tkey_init(tkey_t *key,
-              tkey_cb_mode_t cb_mode,
-              tkey_event_cb_t event_cb,
-              tkey_read_cb_t read_cb,
-              void *user_data);
-```
-
-初始化按键
-
-**参数**
-
-* `key`：按键对象
-* `cb_mode`：回调执行模式
-* `event_cb`：事件回调函数
-* `read_cb`：读取回调函数
-* `user_data`：传递给回调函数的用户数据
-
-**返回值**
-
-* `0`：成功
-* `-TKEY_EINVAL`：参数非法
-
----
-
-### tkey_scan
+### skey_scan
 
 ```c
-int tkey_scan(tkey_t keys[], uint32_t key_count);
+uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
 ```
 
 扫描按键状态
 
-* 对于 `TKEY_CB_MODE_DEFERRED`，产生事件并放入队列
-* 对于 `TKEY_CB_MODE_IMMEDIATE`，直接执行回调
+* 对于 `SKEY_CALLBACK_MODE_IMMEDIATE`，事件产生后直接执行回调
+* 对于 `SKEY_CALLBACK_MODE_DEFERRED`，事件被放入分组的事件队列
 
 **参数**
 
 * `keys`：按键对象数组
-* `key_count`：按键对象数量
+* `key_num`：按键对象数量
+* `group`：按键所属分组
 
 **返回值**
 
-* `0`：成功
-* `-TKEY_EINVAL`：参数非法
-* `-TKEY_EAGAIN`：队列已满（多个按键入队失败时错误码按位或合并）
+* 因队列已满而未能入队的事件数量（立即模式恒为 `0`）
+
+**说明**
+
+* `keys`、`group`、`group->read_cb`、`group->event_cb` 均不可为空
+* 当 `group->queue.buffer` 非空时，`group->queue.length` 必须为 2 的幂
 
 ---
 
-### tkey_dispatch
+### skey_dispatch
 
 ```c
-void tkey_dispatch(uint8_t max_event_num);
+void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
 ```
 
-处理按键事件队列并执行回调
+处理分组事件队列并执行回调
 
-仅对 `TKEY_CB_MODE_DEFERRED` 模式有效
+仅对 `SKEY_CALLBACK_MODE_DEFERRED` 模式有效
 
 **参数**
 
 * `max_event_num`：单次调用处理事件的最大数量
+* `group`：按键所属分组
 
 ---
 
-### tkey_set_debounce
+### skey_lock / skey_unlock
 
 ```c
-int tkey_set_debounce(tkey_t *key, uint16_t debounce_ticks);
+static inline int skey_lock(void);
+static inline void skey_unlock(int skey_lock_state);
 ```
 
-设置按键的消抖时间
+平台相关的锁抽象
 
-**参数**
+`skey_lock()` 返回的锁状态会传给 `skey_unlock()`，用于恢复临界区
 
-* `key`：按键对象
-* `debounce_ticks`：消抖时间
+默认实现为空操作，需要中断安全的平台可自行实现
 
-**返回值**
+## 数据结构
 
-* `0`：成功
-* `-TKEY_EINVAL`：参数非法
-
----
-
-### tkey_set_long_press_duration
+### skey_t
 
 ```c
-int tkey_set_long_press_duration(tkey_t *key,
-                                 uint16_t long_press_duration_ticks);
+typedef struct {
+    volatile uint16_t ticks;
+    volatile uint8_t press_count;
+    volatile uint8_t state;
+    void *user_data;
+} skey_t;
 ```
 
-设置按键的长按持续时间
+* `ticks`：计时器，用于消抖、长按与超时判断
+* `press_count`：当前点击序列内的按下次数
+* `state`：编码后的信号层状态、手势层状态与标志位
+* `user_data`：传递给读取/事件回调的用户数据
 
-**参数**
+使用前必须零初始化
 
-* `key`：按键对象
-* `long_press_duration_ticks`：长按持续时间
-
-**返回值**
-
-* `0`：成功
-* `-TKEY_EINVAL`：参数非法
-
----
-
-### tkey_set_multi_press_timeout
+### skey_message_t
 
 ```c
-int tkey_set_multi_press_timeout(tkey_t *key,
-                                 uint16_t multi_press_timeout_ticks);
+typedef struct {
+    uint8_t event;
+    uint8_t press_count;
+    void *user_data;
+} skey_message_t;
 ```
 
-设置按键的多次按下间隔超时时间
+事件队列中的消息单元
 
-**参数**
+### skey_queue_t
 
-* `key`：按键对象
-* `multi_press_timeout_ticks`：多次按下间隔超时时间
+```c
+typedef struct {
+    skey_message_t *buffer;
+    uint8_t length;
+    volatile uint8_t write_index;
+    volatile uint8_t read_index;
+} skey_queue_t;
+```
 
-**返回值**
+SPSC 事件队列
 
-* `0`：成功
-* `-TKEY_EINVAL`：参数非法
+### skey_group_t
 
-## 宏
+```c
+typedef struct {
+    uint8_t (*read_cb)(void *user_data);
+    void (*event_cb)(uint8_t event, uint8_t press_count, void *user_data);
+    skey_cb_mode_t cb_mode;
+    skey_db_mode_t press_db_mode;
+    skey_db_mode_t release_db_mode;
+    uint16_t press_debounce_ticks;
+    uint16_t release_debounce_ticks;
+    uint16_t long_press_expired_ticks;
+    uint16_t multi_press_timeout_ticks;
+    uint16_t multi_release_timeout_ticks;
+    skey_queue_t queue;
+} skey_group_t;
+```
 
-### TKEY_DEFAULT_DEBOUNCE
+按键分组配置
 
-默认的消抖时间，默认值：`1`
+* `read_cb`：读取回调，返回 `0` 表示按下，非 `0` 表示释放
+* `event_cb`：事件回调
+* `cb_mode`：回调执行模式
+* `press_db_mode` / `release_db_mode`：按下 / 释放消抖模式
+* `press_debounce_ticks` / `release_debounce_ticks`：按下 / 释放消抖时间
+* `long_press_expired_ticks`：长按判定阈值
+* `multi_press_timeout_ticks`：按下期间多击超时
+* `multi_release_timeout_ticks`：释放期间多击超时
+* `queue`：事件队列
 
-### TKEY_DEFAULT_LONG_PRESS_THRESHOLD
+使用前必须零初始化
 
-默认的长按持续时间，默认值：`50`
+## 宏与枚举
 
-### TKEY_DEFAULT_MULTI_PRESS_INTERVAL
+### 事件宏
 
-默认的多次按下间隔时间，默认值：`30`
+均为位掩码：
 
-### TKEY_QUEUE_SIZE
+| 宏                                  | 值          |
+| ---------------------------------- | ---------- |
+| `SKEY_EVENT_PRESS_DEFER`           | `1U << 0`  |
+| `SKEY_EVENT_PRESS_EAGER`           | `1U << 1`  |
+| `SKEY_EVENT_RELEASE_DEFER`         | `1U << 2`  |
+| `SKEY_EVENT_RELEASE_EAGER`         | `1U << 3`  |
+| `SKEY_EVENT_LONG_PRESS`            | `1U << 4`  |
+| `SKEY_EVENT_LONG_RELEASE`          | `1U << 5`  |
+| `SKEY_EVENT_MULTI_PRESS_TIMEOUT`   | `1U << 6`  |
+| `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` | `1U << 7`  |
 
-队列长度
+辅助宏：
 
-要求：
+```c
+#define skey_event_set(event, value)  (event |= value)
+#define skey_event_get(event, value)  ((event) & value)
+```
 
-* 必须为 2 的幂
-* 不得超过 256
+### skey_cb_mode_t
 
-默认值：`16`
+```c
+typedef enum {
+    SKEY_CALLBACK_MODE_DEFERRED = 0,
+    SKEY_CALLBACK_MODE_IMMEDIATE,
+} skey_cb_mode_t;
+```
 
-### TKEY_MAX_TICKS
+回调执行模式
 
-按键最大计时数
+### skey_db_mode_t
 
-### TKEY_MAX_COUNT
+```c
+typedef enum {
+    SKEY_DEBOUNCE_MODE_DEFER = 0,
+    SKEY_DEBOUNCE_MODE_EAGER,
+} skey_db_mode_t;
+```
 
-按键最大按下次数
+消抖模式
 
-### TKEY_EINVAL
+### SKEY_MAX_TICK
 
-参数非法错误码
+计时器上限，值为 `0xFFFF`（`65535`）
 
-### TKEY_EAGAIN
+达到该值后 `ticks` 不再增加
 
-队列已满错误码
+### SKEY_MAX_COUNT
+
+按下次数上限，值为 `0xFF`（`255`）
+
+达到该值后 `press_count` 不再增加
