@@ -39,6 +39,9 @@
 #define skey_flag_reset(shift, value) \
     (key->state &= (uint8_t)~(1U << (value + shift)))
 
+#define skey_event_set(event, value) (event |= value)
+#define skey_event_get(event, value) ((event) & value)
+
 static int skey_queue_send(skey_queue_t *queue, const skey_message_t *message) {
     uint8_t w = queue->write_index;
     uint8_t next = (w + 1) & (queue->length - 1);

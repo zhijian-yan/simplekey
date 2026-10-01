@@ -32,9 +32,6 @@ static inline void skey_unlock(int skey_lock_state) {
 #define SKEY_EVENT_MULTI_PRESS_TIMEOUT   (1U << 6)
 #define SKEY_EVENT_MULTI_RELEASE_TIMEOUT (1U << 7)
 
-#define skey_event_set(event, value)     (event |= value)
-#define skey_event_get(event, value)     ((event) & value)
-
 typedef enum {
     SKEY_CALLBACK_MODE_DEFERRED = 0,
     SKEY_CALLBACK_MODE_IMMEDIATE,
