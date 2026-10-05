@@ -3,6 +3,7 @@
 
 #include "simplekey.h"
 #include <assert.h>
+#include <string.h>
 
 #define skey_check_param(param)     assert((param) != 0)
 #define skey_is_pow2(param)         (!(param == 0 || param & (param - 1)))
@@ -44,7 +45,7 @@
 
 static int skey_queue_send(skey_queue_t *queue, const skey_message_t *message) {
     uint8_t w = queue->write_index;
-    uint8_t next = (w + 1) & (queue->capacity - 1);
+    uint8_t next = (w + 1) & queue->capacity;
     if (next == queue->read_index)
         return 1;
     queue->buffer[w] = *message;
@@ -57,7 +58,7 @@ static int skey_queue_receive(skey_queue_t *queue, skey_message_t *message) {
     if (r == queue->write_index)
         return 1;
     *message = queue->buffer[r];
-    queue->read_index = (r + 1) & (queue->capacity - 1);
+    queue->read_index = (r + 1) & queue->capacity;
     return 0;
 }
 
@@ -202,12 +203,42 @@ static uint8_t skey_gesture_proc(skey_t *key, const skey_group_t *group,
     return events;
 }
 
-uint8_t skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
+void skey_init_key(skey_t *key, void *user_data) {
+    skey_check_param(key);
+    memset(key, 0, sizeof(skey_t));
+    key->user_data = user_data;
+}
+
+void skey_init_group(skey_group_t *group, const skey_group_config_t *config) {
+    skey_check_param(group);
+    skey_check_param(config);
+    skey_check_param(config->read_cb);
+    skey_check_param(config->event_cb);
+    if (config->callback_mode == SKEY_CALLBACK_MODE_DEFERRED) {
+        skey_check_param(config->queue_buffer);
+        skey_check_param(skey_is_pow2(config->queue_size));
+        skey_check_param(config->queue_size <= SKEY_MAX_QUEUE_SIZE);
+        skey_check_param(config->queue_size >= SKEY_MIN_QUEUE_SIZE);
+    }
+    memset(group, 0, sizeof(skey_group_t));
+    group->read_cb = config->read_cb;
+    group->event_cb = config->event_cb;
+    group->callback_mode = config->callback_mode;
+    group->queue.buffer = config->queue_buffer;
+    group->queue.capacity = (uint8_t)(config->queue_size - 1);
+    group->press_debounce_mode = config->press_debounce_mode;
+    group->release_debounce_mode = config->release_debounce_mode;
+    group->press_debounce_ticks = config->press_debounce_ticks;
+    group->release_debounce_ticks = config->release_debounce_ticks;
+    group->long_press_expired_ticks = config->long_press_expired_ticks;
+    group->multi_press_timeout_ticks = config->multi_press_timeout_ticks;
+    group->multi_release_timeout_ticks = config->multi_release_timeout_ticks;
+}
+
+int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
     skey_check_param(keys);
     skey_check_param(group);
-    skey_check_param(group->read_cb);
-    skey_check_param(group->event_cb);
-    uint8_t ret = 0;
+    int ret = 0;
     while (key_count > 0) {
         key_count -= 1;
         uint8_t level = group->read_cb(keys[key_count].user_data);
@@ -223,9 +254,8 @@ uint8_t skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
             if (group->callback_mode == SKEY_CALLBACK_MODE_IMMEDIATE) {
                 group->event_cb(message.events, message.press_count,
                                 message.user_data);
-            } else if (group->queue.buffer) {
-                skey_check_param(skey_is_pow2(group->queue.capacity));
-                ret += (uint8_t)skey_queue_send(&group->queue, &message);
+            } else if (group->callback_mode == SKEY_CALLBACK_MODE_DEFERRED) {
+                ret += skey_queue_send(&group->queue, &message);
             }
         }
     }
@@ -234,7 +264,6 @@ uint8_t skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
 
 void skey_dispatch(uint8_t max_event_count, skey_group_t *group) {
     skey_check_param(group);
-    skey_check_param(group->event_cb);
     skey_message_t message;
     while (max_event_count > 0 &&
            !skey_queue_receive(&group->queue, &message)) {
