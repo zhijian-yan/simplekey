@@ -10,15 +10,11 @@ extern "C" {
 
 #include <stdint.h>
 
-static inline int skey_lock(void) {
-    /* Disable interrupts if needed */
-    return 0;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    /* Restore interrupt state */
-    (void)skey_lock_state;
-}
+#ifdef SKEY_PORT_HEADER
+#include SKEY_PORT_HEADER
+#else
+#include "simplekey_port.h"
+#endif
 
 #define SKEY_MAX_TICK                    (0xFFFF)
 #define SKEY_MAX_COUNT                   (0xFF)

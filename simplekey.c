@@ -48,7 +48,9 @@ static int skey_queue_send(skey_queue_t *queue, const skey_message_t *message) {
     uint8_t next = (w + 1) & queue->capacity;
     if (next == queue->read_index)
         return 1;
+    SKEY_ACQUIRE();
     queue->buffer[w] = *message;
+    SKEY_RELEASE();
     queue->write_index = next;
     return 0;
 }
@@ -57,7 +59,9 @@ static int skey_queue_receive(skey_queue_t *queue, skey_message_t *message) {
     uint8_t r = queue->read_index;
     if (r == queue->write_index)
         return 1;
+    SKEY_ACQUIRE();
     *message = queue->buffer[r];
+    SKEY_RELEASE();
     queue->read_index = (r + 1) & queue->capacity;
     return 0;
 }
