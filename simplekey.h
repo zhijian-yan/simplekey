@@ -35,12 +35,12 @@ static inline void skey_unlock(int skey_lock_state) {
 typedef enum {
     SKEY_CALLBACK_MODE_DEFERRED = 0,
     SKEY_CALLBACK_MODE_IMMEDIATE,
-} skey_cb_mode_t;
+} skey_callback_mode_t;
 
 typedef enum {
     SKEY_DEBOUNCE_MODE_DEFER = 0,
     SKEY_DEBOUNCE_MODE_EAGER,
-} skey_db_mode_t;
+} skey_debounce_mode_t;
 
 typedef struct {
     volatile uint16_t ticks;
@@ -50,24 +50,24 @@ typedef struct {
 } skey_t;
 
 typedef struct {
-    uint8_t event;
+    uint8_t events;
     uint8_t press_count;
     void *user_data;
 } skey_message_t;
 
 typedef struct {
     skey_message_t *buffer;
-    uint8_t length;
+    uint8_t capacity;
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
 
 typedef struct {
     uint8_t (*read_cb)(void *user_data);
-    void (*event_cb)(uint8_t event, uint8_t press_count, void *user_data);
-    skey_cb_mode_t cb_mode;
-    skey_db_mode_t press_db_mode;
-    skey_db_mode_t release_db_mode;
+    void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
+    skey_callback_mode_t callback_mode;
+    skey_debounce_mode_t press_debounce_mode;
+    skey_debounce_mode_t release_debounce_mode;
     uint16_t press_debounce_ticks;
     uint16_t release_debounce_ticks;
     uint16_t long_press_expired_ticks;
@@ -76,8 +76,8 @@ typedef struct {
     skey_queue_t queue;
 } skey_group_t;
 
-uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
-void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
+uint8_t skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group);
+void skey_dispatch(uint8_t max_event_count, skey_group_t *group);
 
 #ifdef __cplusplus
 }

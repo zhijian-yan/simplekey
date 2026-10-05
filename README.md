@@ -46,17 +46,17 @@ skey_group_t group;
 skey_message_t queue_buffer[16];
 ```
 
-Both `skey_t` and `skey_group_t` must be zero-initialized (automatic when declared as global or static objects).
+Both `skey_t` and `skey_group_t` must be zero-initialized (automatic when declared as global or static objects). Objects on the stack or heap must be cleared explicitly, e.g. with `memset()`. The library provides no initialization function and does not validate the initial state, so a non-zeroed object leads to undefined behavior.
 
 ### 2. Configure the Group
 
 ```c
 group.read_cb = skey_read_cb;
 group.event_cb = skey_event_cb;
-group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
+group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
 
-group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
-group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
 
 group.press_debounce_ticks = 1;
 group.release_debounce_ticks = 1;
@@ -65,7 +65,7 @@ group.multi_press_timeout_ticks = 30;
 group.multi_release_timeout_ticks = 30;
 
 group.queue.buffer = queue_buffer;
-group.queue.length = 16;
+group.queue.capacity = 16;
 ```
 
 ### 3. Implement the Read Callback
@@ -82,16 +82,16 @@ uint8_t skey_read_cb(void *user_data) {
 ### 4. Implement the Event Callback
 
 ```c
-void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
-    if (event & SKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
+    if (events & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
 
-    if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+    if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
         printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 ```
 
-`event` is a bitmask; multiple events may be delivered in a single callback, so test them with bitwise AND.
+`events` is a bitmask; multiple events may be delivered in a single callback, so test them with bitwise AND.
 
 ### 5. Scan Keys Periodically
 
@@ -133,10 +133,10 @@ uint8_t skey_read_cb(void *user_data) {
     return 1;
 }
 
-void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
-    if (event & SKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
+    if (events & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
-    else if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+    else if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
         printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 
@@ -152,16 +152,16 @@ int main(void) {
 
     group.read_cb = skey_read_cb;
     group.event_cb = skey_event_cb;
-    group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
-    group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+    group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
     group.press_debounce_ticks = 1;
     group.release_debounce_ticks = 1;
     group.long_press_expired_ticks = 100;
     group.multi_press_timeout_ticks = 30;
     group.multi_release_timeout_ticks = 30;
     group.queue.buffer = queue_buffer;
-    group.queue.length = 16;
+    group.queue.capacity = 16;
 
     while (1) {
         skey_dispatch(8, &group);
@@ -177,7 +177,7 @@ simplekey uses a polling-based key scanning mechanism.
 The application periodically calls:
 
 ```c
-skey_scan(keys, key_num, &group);
+skey_scan(keys, key_count, &group);
 ```
 
 For example, every 10 ms.
@@ -251,15 +251,29 @@ The signal layer samples the key and performs debouncing. The input is the level
 | ------------------ | ----------------------------------------------------------- | --------------------------------------------------------------- |
 | `IDLE`             | `level == 0`                                                | `ticks = 0`, → `PRESS_DEBOUNCE`, emit `PRESS_EAGER`             |
 | `PRESS_DEBOUNCE`   | `ticks >= press_debounce_ticks` and `level == 0`            | `ticks = 0`, → `PRESSED`, emit `PRESS_DEFER`                    |
-| `PRESS_DEBOUNCE`   | `ticks >= press_debounce_ticks` and `level != 0`            | reset the whole `state` (treated as bounce)                     |
+| `PRESS_DEBOUNCE`   | `ticks >= press_debounce_ticks` and `level != 0`            | `key->state = 0`, invalidate the press (bounce)                 |
 | `PRESS_DEBOUNCE`   | otherwise                                                   | `ticks++`                                                       |
 | `PRESSED`          | `level != 0`                                                | `ticks = 0`, → `RELEASE_DEBOUNCE`, emit `RELEASE_EAGER`         |
 | `PRESSED`          | otherwise                                                   | `ticks++` (capped at `SKEY_MAX_TICK`)                           |
 | `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` and `level != 0`          | `ticks = 0`, → `RELEASED`, emit `RELEASE_DEFER`                 |
-| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` and `level == 0`          | reset the whole `state` (treated as bounce)                     |
+| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` and `level == 0`          | `key->state = 0`, invalidate the press (bounce)                 |
 | `RELEASE_DEBOUNCE` | otherwise                                                   | `ticks++`                                                       |
 | `RELEASED`         | `level == 0`                                                | `ticks = 0`, gesture → `IDLE`, → `PRESS_DEBOUNCE`, emit `PRESS_EAGER` |
 | `RELEASED`         | otherwise                                                   | `ticks++`                                                       |
+
+#### Transition Invalidation (Bounce)
+
+A bounce is a level that returns to its previous value before the debounce has confirmed the transition. A bounce that survives the debounce is treated as contact noise, so the press it belongs to is invalidated: the whole `state` byte is cleared, as if the press had never happened.
+
+Clearing the byte resets the signal-layer state, the gesture-layer state, and the gesture-layer flags in a single operation. The gesture layer is not notified separately, and it does not need to be: its own state lives in the same byte and is cleared with it, so the two layers stay consistent by construction.
+
+The trade-off is deliberate: the gesture layer cannot tell a bounce apart from an interrupted press, so a sequence that was already under way is discarded together with the bounce. Two consequences follow, and both are visible only when the corresponding debounce is set above `1` tick:
+
+* **Release bounce.** A long press that was already reported (`LONG_PRESS`) never gets its matching `LONG_RELEASE`. The press sequence is dropped instead of being finished.
+* **Release bounce.** The click sequence is dropped as well, so `MULTI_RELEASE_TIMEOUT` — the event [Timing](#timing) recommends for single/double-click detection — is not emitted for that sequence. With `release_debounce_ticks = 2`, a double-click whose second release bounces still reaches `press_count == 2`, but the timeout event never arrives, so the click is not reported.
+* **Press bounce.** This one is harmless: the gesture layer has not committed to the press yet, so a later press is tracked normally and still counts as a single click.
+
+The trade-off buys bounce resistance at the cost of losing the whole sequence rather than just the bounce. If you rely on `LONG_RELEASE` or on `MULTI_RELEASE_TIMEOUT` for click counting, keep `release_debounce_ticks` at `1`, or treat an invalidated sequence as lost input in the application. A press bounce never invalidates a sequence that is already being tracked, so `press_debounce_ticks` can be raised freely.
 
 ### Gesture-Layer State Machine
 
@@ -274,8 +288,8 @@ The gesture layer consumes signal-layer events, applies the configured debounce 
 
 | Current State | Condition                                                         | Action                                                                                         |
 | ------------- | ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `IDLE`        | press event (`PRESS_DEFER` / `PRESS_EAGER` per `press_db_mode`)   | → `PRESSED`; if `MULTI_PRESSED` is set then `press_count++`, otherwise `press_count = 1` and set `MULTI_PRESSED` |
-| `PRESSED`     | release event (`RELEASE_DEFER` / `RELEASE_EAGER` per `release_db_mode`) | → `RELEASED`                                                                             |
+| `IDLE`        | press event (`PRESS_DEFER` / `PRESS_EAGER` per `press_debounce_mode`)   | → `PRESSED`; if `MULTI_PRESSED` is set then `press_count++`, otherwise `press_count = 1` and set `MULTI_PRESSED` |
+| `PRESSED`     | release event (`RELEASE_DEFER` / `RELEASE_EAGER` per `release_debounce_mode`) | → `RELEASED`                                                                             |
 | `PRESSED`     | `LONG_PRESSED` not set and `ticks > long_press_expired_ticks`     | set `LONG_PRESSED`, emit `LONG_PRESS`                                                          |
 | `PRESSED`     | `MULTI_PRESSED` set and `ticks > multi_press_timeout_ticks`       | clear `MULTI_PRESSED`, emit `MULTI_PRESS_TIMEOUT`                                              |
 | `RELEASED`    | `LONG_PRESSED` set                                                | clear `LONG_PRESSED`, emit `LONG_RELEASE`                                                      |
@@ -291,7 +305,7 @@ The signal layer emits events both on level transitions and on debounce confirma
 | `SKEY_DEBOUNCE_MODE_DEFER` | React after debounce confirmation (more bounce-resistant)          |
 | `SKEY_DEBOUNCE_MODE_EAGER` | React immediately on level transition (lower latency, less filtering) |
 
-Press and release debouncing are configured independently through `group.press_db_mode` and `group.release_db_mode`.
+Press and release debouncing are configured independently through `group.press_debounce_mode` and `group.release_debounce_mode`.
 
 ### Events
 
@@ -306,7 +320,7 @@ Press and release debouncing are configured independently through `group.press_d
 | `SKEY_EVENT_MULTI_PRESS_TIMEOUT`   | multi-press wait while pressed exceeded `multi_press_timeout_ticks` |
 | `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` | multi-press wait while released exceeded `multi_release_timeout_ticks` |
 
-Multiple events may be produced in the same callback; `event` is the bitwise OR of them.
+Multiple events may be produced in the same callback; `events` is the bitwise OR of them.
 
 ### Timing
 
@@ -325,7 +339,7 @@ ticks
 Users typically determine single-click, double-click, or multi-click actions in the `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` event using `press_count`:
 
 ```c
-if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT) {
+if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT) {
     switch (press_count) {
     case 1:
         printf("single click\n");
@@ -402,15 +416,17 @@ Events within a group are passed through a single-producer single-consumer (SPSC
 ```c
 typedef struct {
     skey_message_t *buffer;   /* user-provided buffer */
-    uint8_t length;           /* must be a power of two (max 128 for uint8_t) */
+    uint8_t capacity;         /* buffer element count, a power of two (max 128 for uint8_t) */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
 ```
 
+`capacity` is the number of elements in `buffer`, not the number of messages that can be queued: the ring buffer always leaves one slot free to tell a full queue from an empty one, so a queue with `capacity` holds at most `capacity - 1` messages.
+
 Requirements:
 
-* When `buffer` is not `NULL`, `length` must be a power of two
+* When `buffer` is not `NULL`, `capacity` must be a power of two and at least `2`
 * When `buffer` is `NULL`, deferred events are dropped (immediate mode is unaffected)
 * When the queue is full, events are dropped and the return value of `skey_scan()` accumulates the number of drops
 
@@ -426,7 +442,9 @@ simplekey uses an SPSC (Single Producer Single Consumer) model.
 
 * `skey_dispatch()`
 
-The event queue is safe under the SPSC model, and `skey_scan()` uses the lock abstraction to protect the critical section while updating key state and generating events.
+The event queue is safe under the SPSC model, and `skey_scan()` uses the lock abstraction to protect the key state (including the signal-layer, gesture-layer, and flag bits) while it is being updated.
+
+The critical section covers only the state update. Enqueuing into the event queue and invoking `event_cb` happen after `skey_unlock()`; they rely on the SPSC model above rather than on the lock.
 
 simplekey abstracts the platform-specific lock through two interfaces:
 
@@ -456,7 +474,7 @@ The following APIs must follow the SPSC model: only one execution context may ca
 ### skey_scan
 
 ```c
-uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
+int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group);
 ```
 
 Scan key states.
@@ -467,24 +485,24 @@ Scan key states.
 **Parameters**
 
 * `keys` - Key object array
-* `key_num` - Number of keys
+* `key_count` - Number of keys
 * `group` - Group the keys belong to
 
 **Return Value**
 
-* Number of events that could not be enqueued because the queue was full (always `0` in immediate mode)
+* `int` - Number of events that could not be enqueued because the queue was full (always `0` in immediate mode); check it if you need to notice dropped events
 
 **Notes**
 
 * `keys`, `group`, `group->read_cb`, and `group->event_cb` must not be `NULL`
-* When `group->queue.buffer` is not `NULL`, `group->queue.length` must be a power of two
+* When `group->queue.buffer` is not `NULL`, `group->queue.capacity` must be a power of two and at least `2`
 
 ---
 
 ### skey_dispatch
 
 ```c
-void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
+void skey_dispatch(uint8_t max_event_count, skey_group_t *group);
 ```
 
 Process the group's event queue and execute callbacks.
@@ -493,7 +511,7 @@ Only valid in `SKEY_CALLBACK_MODE_DEFERRED` mode.
 
 **Parameters**
 
-* `max_event_num` - Maximum events processed per call
+* `max_event_count` - Maximum events processed per call
 * `group` - Group the keys belong to
 
 ---
@@ -529,13 +547,13 @@ typedef struct {
 * `state` - packed signal state, gesture state, and flags
 * `user_data` - user data passed to the read/event callbacks
 
-Must be zero-initialized before use.
+Must be zero-initialized before use. Global and static objects are zero-initialized automatically; stack and heap objects must be cleared explicitly (e.g. with `memset()`).
 
 ### skey_message_t
 
 ```c
 typedef struct {
-    uint8_t event;
+    uint8_t events;
     uint8_t press_count;
     void *user_data;
 } skey_message_t;
@@ -548,7 +566,7 @@ A single message in the event queue.
 ```c
 typedef struct {
     skey_message_t *buffer;
-    uint8_t length;
+    uint8_t capacity;
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
@@ -561,10 +579,10 @@ SPSC event queue.
 ```c
 typedef struct {
     uint8_t (*read_cb)(void *user_data);
-    void (*event_cb)(uint8_t event, uint8_t press_count, void *user_data);
-    skey_cb_mode_t cb_mode;
-    skey_db_mode_t press_db_mode;
-    skey_db_mode_t release_db_mode;
+    void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
+    skey_callback_mode_t callback_mode;
+    skey_debounce_mode_t press_debounce_mode;
+    skey_debounce_mode_t release_debounce_mode;
     uint16_t press_debounce_ticks;
     uint16_t release_debounce_ticks;
     uint16_t long_press_expired_ticks;
@@ -576,17 +594,19 @@ typedef struct {
 
 Key group configuration.
 
+A group is not a collection of keys: it holds the callbacks, the configuration, and the event queue that a set of keys share. The keys themselves are passed separately to `skey_scan()` as a `skey_t` array, so `group` here means "the configuration shared by these keys", not "the keys in this group".
+
 * `read_cb` - read callback, returns `0` when pressed and non-zero when released
 * `event_cb` - event callback
-* `cb_mode` - callback execution mode
-* `press_db_mode` / `release_db_mode` - press/release debounce modes
+* `callback_mode` - callback execution mode
+* `press_debounce_mode` / `release_debounce_mode` - press/release debounce modes
 * `press_debounce_ticks` / `release_debounce_ticks` - press/release debounce durations
 * `long_press_expired_ticks` - long-press threshold
 * `multi_press_timeout_ticks` - multi-press timeout while pressed
 * `multi_release_timeout_ticks` - multi-press timeout while released
 * `queue` - event queue
 
-Must be zero-initialized before use.
+Must be zero-initialized before use. Global and static objects are zero-initialized automatically; stack and heap objects must be cleared explicitly (e.g. with `memset()`).
 
 ## Macros and Enums
 
@@ -608,28 +628,28 @@ All are bitmasks:
 Helper macros:
 
 ```c
-#define skey_event_set(event, value)  (event |= value)
-#define skey_event_get(event, value)  ((event) & value)
+#define skey_event_set(events, value)  (events |= value)
+#define skey_event_get(events, value)  ((events) & value)
 ```
 
-### skey_cb_mode_t
+### skey_callback_mode_t
 
 ```c
 typedef enum {
     SKEY_CALLBACK_MODE_DEFERRED = 0,
     SKEY_CALLBACK_MODE_IMMEDIATE,
-} skey_cb_mode_t;
+} skey_callback_mode_t;
 ```
 
 Callback execution mode.
 
-### skey_db_mode_t
+### skey_debounce_mode_t
 
 ```c
 typedef enum {
     SKEY_DEBOUNCE_MODE_DEFER = 0,
     SKEY_DEBOUNCE_MODE_EAGER,
-} skey_db_mode_t;
+} skey_debounce_mode_t;
 ```
 
 Debounce mode.

@@ -46,17 +46,17 @@ skey_group_t group;
 skey_message_t queue_buffer[16];
 ```
 
-`skey_t` 与 `skey_group_t` 均需零初始化（声明为全局或静态变量即可自动满足）
+`skey_t` 与 `skey_group_t` 均需零初始化（声明为全局或静态变量即可自动满足）。栈上或堆上的对象必须显式清零（例如使用 `memset()`）。本库不提供初始化函数，也不会校验初始状态，未清零的对象会导致未定义行为
 
 ### 2. 配置分组
 
 ```c
 group.read_cb = skey_read_cb;
 group.event_cb = skey_event_cb;
-group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
+group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
 
-group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
-group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
 
 group.press_debounce_ticks = 1;
 group.release_debounce_ticks = 1;
@@ -65,7 +65,7 @@ group.multi_press_timeout_ticks = 30;
 group.multi_release_timeout_ticks = 30;
 
 group.queue.buffer = queue_buffer;
-group.queue.length = 16;
+group.queue.capacity = 16;
 ```
 
 ### 3. 实现读取回调
@@ -82,11 +82,11 @@ uint8_t skey_read_cb(void *user_data) {
 ### 4. 实现事件回调
 
 ```c
-void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
-    if (event & SKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
+    if (events & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
 
-    if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+    if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
         printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 ```
@@ -133,10 +133,10 @@ uint8_t skey_read_cb(void *user_data) {
     return 1;
 }
 
-void skey_event_cb(uint8_t event, uint8_t press_count, void *user_data) {
-    if (event & SKEY_EVENT_LONG_PRESS)
+void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
+    if (events & SKEY_EVENT_LONG_PRESS)
         printf("key[%d] long pressed\r\n", (int)user_data);
-    else if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
+    else if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT)
         printf("key[%d] pressed:%d\r\n", (int)user_data, press_count);
 }
 
@@ -152,16 +152,16 @@ int main(void) {
 
     group.read_cb = skey_read_cb;
     group.event_cb = skey_event_cb;
-    group.cb_mode = SKEY_CALLBACK_MODE_DEFERRED;
-    group.press_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.release_db_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+    group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
     group.press_debounce_ticks = 1;
     group.release_debounce_ticks = 1;
     group.long_press_expired_ticks = 100;
     group.multi_press_timeout_ticks = 30;
     group.multi_release_timeout_ticks = 30;
     group.queue.buffer = queue_buffer;
-    group.queue.length = 16;
+    group.queue.capacity = 16;
 
     while (1) {
         skey_dispatch(8, &group);
@@ -177,7 +177,7 @@ simplekey 采用周期扫描（Polling）方式实现按键检测
 用户需要以固定周期调用：
 
 ```c
-skey_scan(keys, key_num, &group);
+skey_scan(keys, key_count, &group);
 ```
 
 例如每 10ms 调用一次
@@ -251,15 +251,29 @@ skey_scan(keys, key_num, &group);
 | ---------------- | -------------------------------------------------------- | ----------------------------------------- |
 | `IDLE`           | `level == 0`                                             | `ticks = 0`，→ `PRESS_DEBOUNCE`，产生 `PRESS_EAGER` |
 | `PRESS_DEBOUNCE` | `ticks >= press_debounce_ticks` 且 `level == 0`           | `ticks = 0`，→ `PRESSED`，产生 `PRESS_DEFER`  |
-| `PRESS_DEBOUNCE` | `ticks >= press_debounce_ticks` 且 `level != 0`           | 复位整个 `state`（判为抖动）                        |
+| `PRESS_DEBOUNCE` | `ticks >= press_debounce_ticks` 且 `level != 0`           | `key->state = 0`，判定本次按下无效（抖动）                   |
 | `PRESS_DEBOUNCE` | 其它                                                       | `ticks++`                                 |
 | `PRESSED`        | `level != 0`                                             | `ticks = 0`，→ `RELEASE_DEBOUNCE`，产生 `RELEASE_EAGER` |
 | `PRESSED`        | 其它                                                       | `ticks++`（上限 `SKEY_MAX_TICK`）             |
 | `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` 且 `level != 0`        | `ticks = 0`，→ `RELEASED`，产生 `RELEASE_DEFER` |
-| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` 且 `level == 0`        | 复位整个 `state`（判为抖动）                        |
+| `RELEASE_DEBOUNCE` | `ticks >= release_debounce_ticks` 且 `level == 0`        | `key->state = 0`，判定本次按下无效（抖动）                   |
 | `RELEASE_DEBOUNCE` | 其它                                                      | `ticks++`                                 |
 | `RELEASED`       | `level == 0`                                             | `ticks = 0`，手势层→ `IDLE`，→ `PRESS_DEBOUNCE`，产生 `PRESS_EAGER` |
 | `RELEASED`       | 其它                                                       | `ticks++`                                 |
+
+#### 抖动判定与状态清除（跳变无效）
+
+抖动是指电平在消抖确认之前回到了先前的值。若抖动在消抖后依然成立，则判定为触点噪声，本次按下整体无效：整个 `state` 字节被清零，等同于这次按下从未发生。
+
+清零会在一次操作中同时复位信号层状态、手势层状态与手势层标志位。手势层不需要额外通知：它的状态本就存放在同一个字节里，随之一并清除，因此两层天然保持一致。
+
+这个取舍是刻意为之：手势层无法区分"抖动"与"被打断的按压"，所以已经在进行的序列会连同抖动一起被丢弃。由此带来两个后果，且仅在对应的消抖阈值大于 `1` tick 时才会出现：
+
+* **抬手抖动**：已经上报过的长按（`LONG_PRESS`）不会再有配对的 `LONG_RELEASE`，该按压序列被丢弃而不是走完
+* **抬手抖动**：点击序列同样被丢弃，因此 [计时](#计时) 一节推荐的 `MULTI_RELEASE_TIMEOUT`（用于判定单击/双击）不会产生。`release_debounce_ticks = 2` 时，第 2 次抬手出现抖动的双击仍能累计到 `press_count == 2`，但超时事件不会到来，这次点击不会被上报
+* **按下抖动**：这一种无害。手势层此时尚未承诺这次按下，之后的按下会被正常跟踪，仍计为一次单击
+
+代价是以"整段序列"换取抖动抵抗能力，而不是只丢弃抖动本身。如果依赖 `LONG_RELEASE` 或依赖 `MULTI_RELEASE_TIMEOUT` 做点击计数，请将 `release_debounce_ticks` 保持为 `1`，或者在应用层把被判无效的序列按丢失处理。按下抖动不会使已在跟踪的序列失效，因此 `press_debounce_ticks` 可以放心调大
 
 ### 手势层状态机
 
@@ -274,8 +288,8 @@ skey_scan(keys, key_num, &group);
 
 | 当前状态       | 条件                                                       | 动作                                                                              |
 | ---------- | -------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `IDLE`     | 按下事件（依 `press_db_mode` 选择 `PRESS_DEFER` / `PRESS_EAGER`） | → `PRESSED`；若 `MULTI_PRESSED` 已置位则 `press_count++`，否则 `press_count = 1` 并置位 `MULTI_PRESSED` |
-| `PRESSED`  | 释放事件（依 `release_db_mode` 选择 `RELEASE_DEFER` / `RELEASE_EAGER`） | → `RELEASED`                                                                    |
+| `IDLE`     | 按下事件（依 `press_debounce_mode` 选择 `PRESS_DEFER` / `PRESS_EAGER`） | → `PRESSED`；若 `MULTI_PRESSED` 已置位则 `press_count++`，否则 `press_count = 1` 并置位 `MULTI_PRESSED` |
+| `PRESSED`  | 释放事件（依 `release_debounce_mode` 选择 `RELEASE_DEFER` / `RELEASE_EAGER`） | → `RELEASED`                                                                    |
 | `PRESSED`  | 未置位 `LONG_PRESSED` 且 `ticks > long_press_expired_ticks`   | 置位 `LONG_PRESSED`，产生 `LONG_PRESS`                                               |
 | `PRESSED`  | 置位 `MULTI_PRESSED` 且 `ticks > multi_press_timeout_ticks`  | 清除 `MULTI_PRESSED`，产生 `MULTI_PRESS_TIMEOUT`                                     |
 | `RELEASED` | 置位 `LONG_PRESSED`                                        | 清除 `LONG_PRESSED`，产生 `LONG_RELEASE`                                             |
@@ -291,7 +305,7 @@ skey_scan(keys, key_num, &group);
 | `SKEY_DEBOUNCE_MODE_DEFER`    | 在消抖确认后响应（更抗抖动）                    |
 | `SKEY_DEBOUNCE_MODE_EAGER`    | 在检测到电平跳变时立即响应（延迟更低，抗抖动能力较弱）        |
 
-按下与释放可分别通过 `group.press_db_mode` 与 `group.release_db_mode` 独立配置
+按下与释放可分别通过 `group.press_debounce_mode` 与 `group.release_debounce_mode` 独立配置
 
 ### 事件
 
@@ -325,7 +339,7 @@ ticks
 通常用户在 `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` 事件中结合 `press_count` 判断单击、双击或多次点击：
 
 ```c
-if (event & SKEY_EVENT_MULTI_RELEASE_TIMEOUT) {
+if (events & SKEY_EVENT_MULTI_RELEASE_TIMEOUT) {
     switch (press_count) {
     case 1:
         printf("single click\n");
@@ -402,15 +416,17 @@ Execute Callback
 ```c
 typedef struct {
     skey_message_t *buffer;   /* 用户提供的缓冲区 */
-    uint8_t length;           /* 必须是 2 的幂（uint8_t 下最大为 128） */
+    uint8_t capacity;         /* 缓冲区元素个数，必须是 2 的幂（uint8_t 下最大为 128） */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
 ```
 
+`capacity` 是 `buffer` 的元素个数，不是可排队的事件数量：环形队列始终空出一个槽位来区分"满"与"空"，因此 `capacity` 的队列最多容纳 `capacity - 1` 条消息。
+
 要求：
 
-* `buffer` 不为 `NULL` 时 `length` 必须为 2 的幂
+* `buffer` 不为 `NULL` 时 `capacity` 必须为 2 的幂，且不小于 `2`
 * `buffer` 为 `NULL` 时，延迟事件将被丢弃（立即模式不受影响）
 * 队列满时事件将被丢弃，`skey_scan()` 的返回值会累加丢弃数量
 
@@ -426,7 +442,9 @@ simplekey 内部采用 `SPSC (Single Producer Single Consumer)` 模型
 
 * `skey_dispatch()`
 
-事件队列由 SPSC 模型保证安全，`skey_scan()` 在更新按键状态与生成事件时使用锁抽象保护临界区
+事件队列由 SPSC 模型保证安全，`skey_scan()` 使用锁抽象保护按键状态（含信号层状态、手势层状态与标志位）的更新过程
+
+临界区仅覆盖状态更新。事件入队与 `event_cb` 调用均在 `skey_unlock()` 之后进行，依赖上述 SPSC 模型而非锁来保证安全
 
 simplekey 通过两个接口抽象平台相关的锁实现：
 
@@ -456,7 +474,7 @@ static inline void skey_unlock(int skey_lock_state)
 ### skey_scan
 
 ```c
-uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
+int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group);
 ```
 
 扫描按键状态
@@ -467,24 +485,24 @@ uint8_t skey_scan(skey_t keys[], uint8_t key_num, skey_group_t *group);
 **参数**
 
 * `keys`：按键对象数组
-* `key_num`：按键对象数量
+* `key_count`：按键对象数量
 * `group`：按键所属分组
 
 **返回值**
 
-* 因队列已满而未能入队的事件数量（立即模式恒为 `0`）
+* `int`：因队列已满而未能入队的事件数量（立即模式恒为 `0`）；若需要感知事件被丢弃，请检查该返回值
 
 **说明**
 
 * `keys`、`group`、`group->read_cb`、`group->event_cb` 均不可为空
-* 当 `group->queue.buffer` 非空时，`group->queue.length` 必须为 2 的幂
+* 当 `group->queue.buffer` 非空时，`group->queue.capacity` 必须为 2 的幂，且不小于 `2`
 
 ---
 
 ### skey_dispatch
 
 ```c
-void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
+void skey_dispatch(uint8_t max_event_count, skey_group_t *group);
 ```
 
 处理分组事件队列并执行回调
@@ -493,7 +511,7 @@ void skey_dispatch(uint8_t max_event_num, skey_group_t *group);
 
 **参数**
 
-* `max_event_num`：单次调用处理事件的最大数量
+* `max_event_count`：单次调用处理事件的最大数量
 * `group`：按键所属分组
 
 ---
@@ -529,13 +547,13 @@ typedef struct {
 * `state`：编码后的信号层状态、手势层状态与标志位
 * `user_data`：传递给读取/事件回调的用户数据
 
-使用前必须零初始化
+使用前必须零初始化。全局与静态变量会自动清零，栈上或堆上的对象必须显式清零（例如使用 `memset()`）
 
 ### skey_message_t
 
 ```c
 typedef struct {
-    uint8_t event;
+    uint8_t events;
     uint8_t press_count;
     void *user_data;
 } skey_message_t;
@@ -548,7 +566,7 @@ typedef struct {
 ```c
 typedef struct {
     skey_message_t *buffer;
-    uint8_t length;
+    uint8_t capacity;
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
@@ -561,10 +579,10 @@ SPSC 事件队列
 ```c
 typedef struct {
     uint8_t (*read_cb)(void *user_data);
-    void (*event_cb)(uint8_t event, uint8_t press_count, void *user_data);
-    skey_cb_mode_t cb_mode;
-    skey_db_mode_t press_db_mode;
-    skey_db_mode_t release_db_mode;
+    void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
+    skey_callback_mode_t callback_mode;
+    skey_debounce_mode_t press_debounce_mode;
+    skey_debounce_mode_t release_debounce_mode;
     uint16_t press_debounce_ticks;
     uint16_t release_debounce_ticks;
     uint16_t long_press_expired_ticks;
@@ -576,17 +594,19 @@ typedef struct {
 
 按键分组配置
 
+分组不是按键的集合：它保存一组按键共享的回调、配置与事件队列。按键自身是作为 `skey_t` 数组单独传给 `skey_scan()` 的，因此这里的 `group` 指"这些按键共享的配置"，而不是"该分组内的按键"。
+
 * `read_cb`：读取回调，返回 `0` 表示按下，非 `0` 表示释放
 * `event_cb`：事件回调
-* `cb_mode`：回调执行模式
-* `press_db_mode` / `release_db_mode`：按下 / 释放消抖模式
+* `callback_mode`：回调执行模式
+* `press_debounce_mode` / `release_debounce_mode`：按下 / 释放消抖模式
 * `press_debounce_ticks` / `release_debounce_ticks`：按下 / 释放消抖时间
 * `long_press_expired_ticks`：长按判定阈值
 * `multi_press_timeout_ticks`：按下期间多击超时
 * `multi_release_timeout_ticks`：释放期间多击超时
 * `queue`：事件队列
 
-使用前必须零初始化
+使用前必须零初始化。全局与静态变量会自动清零，栈上或堆上的对象必须显式清零（例如使用 `memset()`）
 
 ## 宏与枚举
 
@@ -608,28 +628,28 @@ typedef struct {
 辅助宏：
 
 ```c
-#define skey_event_set(event, value)  (event |= value)
-#define skey_event_get(event, value)  ((event) & value)
+#define skey_event_set(events, value)  (events |= value)
+#define skey_event_get(events, value)  ((events) & value)
 ```
 
-### skey_cb_mode_t
+### skey_callback_mode_t
 
 ```c
 typedef enum {
     SKEY_CALLBACK_MODE_DEFERRED = 0,
     SKEY_CALLBACK_MODE_IMMEDIATE,
-} skey_cb_mode_t;
+} skey_callback_mode_t;
 ```
 
 回调执行模式
 
-### skey_db_mode_t
+### skey_debounce_mode_t
 
 ```c
 typedef enum {
     SKEY_DEBOUNCE_MODE_DEFER = 0,
     SKEY_DEBOUNCE_MODE_EAGER,
-} skey_db_mode_t;
+} skey_debounce_mode_t;
 ```
 
 消抖模式
