@@ -36,37 +36,44 @@ git submodule add https://github.com/zhijian-yan/simplekey.git
 
 ## 快速开始
 
-### 1. 定义按键与分组
+### 1. 定义按键、缓冲区与配置
 
 ```c
 #define KEY_NUM 2
 
 skey_t keys[KEY_NUM];
 skey_group_t group;
-skey_message_t queue_buffer[16];
+skey_group_config_t config;         /* 用于初始化 group，可以是局部变量 */
+skey_message_t queue_buffer[16];    /* queue_size 必须是 2 的幂 */
 ```
 
-`skey_t` 与 `skey_group_t` 均需零初始化（声明为全局或静态变量即可自动满足）。栈上或堆上的对象必须显式清零（例如使用 `memset()`）。本库不提供初始化函数，也不会校验初始状态，未清零的对象会导致未定义行为
+`skey_t` 与 `skey_group_t` 由 `skey_init_key()` 与 `skey_init_group()` 初始化，因此无需事先清零。`config` 是只读的普通值，可以放在栈上
 
-### 2. 配置分组
+### 2. 配置并初始化分组
 
 ```c
-group.read_cb = skey_read_cb;
-group.event_cb = skey_event_cb;
-group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+config.read_cb = skey_read_cb;
+config.event_cb = skey_event_cb;
+config.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
 
-group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+config.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+config.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
 
-group.press_debounce_ticks = 1;
-group.release_debounce_ticks = 1;
-group.long_press_expired_ticks = 100;
-group.multi_press_timeout_ticks = 30;
-group.multi_release_timeout_ticks = 30;
+config.press_debounce_ticks = 1;
+config.release_debounce_ticks = 1;
+config.long_press_expired_ticks = 100;
+config.multi_press_timeout_ticks = 30;
+config.multi_release_timeout_ticks = 30;
 
-group.queue.buffer = queue_buffer;
-group.queue.capacity = 16;
+config.queue_buffer = queue_buffer; /* 延迟模式必需 */
+config.queue_size = 16;             /* queue_buffer 的元素个数 */
+
+skey_init_key(&keys[0], (void *)KEY1_PIN);
+skey_init_key(&keys[1], (void *)KEY2_PIN);
+skey_init_group(&group, &config);
 ```
+
+`config` 的每个字段都会被拷贝进 `group`，因此 `skey_init_group()` 返回后 `config` 无需继续存在。在 `SKEY_CALLBACK_MODE_DEFERRED` 模式下 `queue_buffer` 与 `queue_size` 是必需的；在 `SKEY_CALLBACK_MODE_IMMEDIATE` 模式下会被忽略，可以保持为 `0`
 
 ### 3. 实现读取回调
 
@@ -91,7 +98,7 @@ void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
 }
 ```
 
-`event` 为位掩码，同一次回调中可能包含多个事件，请使用按位与进行判断
+`events` 为位掩码，同一次回调中可能包含多个事件，请使用按位与进行判断
 
 ### 5. 周期扫描按键
 
@@ -125,6 +132,7 @@ while (1) {
 
 skey_t keys[KEY_NUM];
 skey_group_t group;
+skey_group_config_t config;
 skey_message_t queue_buffer[16];
 
 uint8_t skey_read_cb(void *user_data) {
@@ -147,21 +155,22 @@ void timer_callback(void) {
 int main(void) {
     hardware_init();
 
-    keys[0].user_data = (void *)KEY1_PIN;
-    keys[1].user_data = (void *)KEY2_PIN;
+    config.read_cb = skey_read_cb;
+    config.event_cb = skey_event_cb;
+    config.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+    config.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    config.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    config.press_debounce_ticks = 1;
+    config.release_debounce_ticks = 1;
+    config.long_press_expired_ticks = 100;
+    config.multi_press_timeout_ticks = 30;
+    config.multi_release_timeout_ticks = 30;
+    config.queue_buffer = queue_buffer;
+    config.queue_size = 16;
 
-    group.read_cb = skey_read_cb;
-    group.event_cb = skey_event_cb;
-    group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
-    group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.press_debounce_ticks = 1;
-    group.release_debounce_ticks = 1;
-    group.long_press_expired_ticks = 100;
-    group.multi_press_timeout_ticks = 30;
-    group.multi_release_timeout_ticks = 30;
-    group.queue.buffer = queue_buffer;
-    group.queue.capacity = 16;
+    skey_init_key(&keys[0], (void *)KEY1_PIN);
+    skey_init_key(&keys[1], (void *)KEY2_PIN);
+    skey_init_group(&group, &config);
 
     while (1) {
         skey_dispatch(8, &group);
@@ -305,7 +314,7 @@ skey_scan(keys, key_count, &group);
 | `SKEY_DEBOUNCE_MODE_DEFER`    | 在消抖确认后响应（更抗抖动）                    |
 | `SKEY_DEBOUNCE_MODE_EAGER`    | 在检测到电平跳变时立即响应（延迟更低，抗抖动能力较弱）        |
 
-按下与释放可分别通过 `group.press_debounce_mode` 与 `group.release_debounce_mode` 独立配置
+按下与释放可分别通过 `config.press_debounce_mode` 与 `config.release_debounce_mode` 独立配置，二者由 `skey_init_group()` 拷贝进分组
 
 ### 事件
 
@@ -415,19 +424,19 @@ Execute Callback
 
 ```c
 typedef struct {
-    skey_message_t *buffer;   /* 用户提供的缓冲区 */
-    uint8_t capacity;         /* 缓冲区元素个数，必须是 2 的幂（uint8_t 下最大为 128） */
+    skey_message_t *buffer;   /* 用户提供的缓冲区，元素个数为 queue_size */
+    uint8_t capacity;         /* 下标掩码 = queue_size - 1，由 skey_init_group() 设置 */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
 ```
 
-`capacity` 是 `buffer` 的元素个数，不是可排队的事件数量：环形队列始终空出一个槽位来区分"满"与"空"，因此 `capacity` 的队列最多容纳 `capacity - 1` 条消息。
+`capacity` 是 `skey_init_group()` 维护的下标掩码：`buffer` 有 `capacity + 1` 个元素，队列最多可容纳 `capacity` 条消息。环形队列始终空出一个槽位来区分"满"与"空"，因此 `queue_size = 16` 的队列可容纳 15 条消息。
 
 要求：
 
-* `buffer` 不为 `NULL` 时 `capacity` 必须为 2 的幂，且不小于 `2`
-* `buffer` 为 `NULL` 时，延迟事件将被丢弃（立即模式不受影响）
+* `config.queue_size` 是 `queue_buffer` 的元素个数：必须是 2 的幂，取值在 `SKEY_MIN_QUEUE_SIZE`（`2`）与 `SKEY_MAX_QUEUE_SIZE`（`256`）之间
+* 在 `SKEY_CALLBACK_MODE_IMMEDIATE` 模式下队列不使用，这些字段可保持为 `0`
 * 队列满时事件将被丢弃，`skey_scan()` 的返回值会累加丢弃数量
 
 ### 并发模型
@@ -471,6 +480,45 @@ static inline void skey_unlock(int skey_lock_state)
 
 ## API 参考
 
+### skey_init_key
+
+```c
+void skey_init_key(skey_t *key, void *user_data);
+```
+
+初始化单个按键并绑定其用户数据
+
+**参数**
+
+* `key`：待初始化的按键对象，不可为空
+* `user_data`：该按键在 `read_cb` 与 `event_cb` 中回传的用户数据，可为空
+
+整个按键状态会被清零，因此对未初始化的对象调用也是安全的
+
+---
+
+### skey_init_group
+
+```c
+void skey_init_group(skey_group_t *group, const skey_group_config_t *config);
+```
+
+按配置初始化分组
+
+**参数**
+
+* `group`：待初始化的分组对象，不可为空；原有内容会被丢弃
+* `config`：待拷贝的配置，不可为空，且不会被修改
+
+**说明**
+
+* `config->read_cb` 与 `config->event_cb` 均不可为空
+* 在 `SKEY_CALLBACK_MODE_DEFERRED` 模式下，`config->queue_buffer` 不可为空，且 `config->queue_size` 必须是 2 的幂，取值在 `SKEY_MIN_QUEUE_SIZE`（`2`）与 `SKEY_MAX_QUEUE_SIZE`（`256`）之间
+* 在 `SKEY_CALLBACK_MODE_IMMEDIATE` 模式下，队列相关字段会被忽略
+* 所有字段都会被拷贝，因此 `config` 可以是之后即失效的局部变量
+
+---
+
 ### skey_scan
 
 ```c
@@ -484,18 +532,13 @@ int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group);
 
 **参数**
 
-* `keys`：按键对象数组
+* `keys`：按键对象数组，不可为空，且必须已由 `skey_init_key()` 初始化
 * `key_count`：按键对象数量
-* `group`：按键所属分组
+* `group`：按键所属分组，不可为空
 
 **返回值**
 
 * `int`：因队列已满而未能入队的事件数量（立即模式恒为 `0`）；若需要感知事件被丢弃，请检查该返回值
-
-**说明**
-
-* `keys`、`group`、`group->read_cb`、`group->event_cb` 均不可为空
-* 当 `group->queue.buffer` 非空时，`group->queue.capacity` 必须为 2 的幂，且不小于 `2`
 
 ---
 
@@ -547,7 +590,7 @@ typedef struct {
 * `state`：编码后的信号层状态、手势层状态与标志位
 * `user_data`：传递给读取/事件回调的用户数据
 
-使用前必须零初始化。全局与静态变量会自动清零，栈上或堆上的对象必须显式清零（例如使用 `memset()`）
+请使用 `skey_init_key()` 创建，它会清零整个对象并绑定用户数据。内部字段由库维护，不应直接写入
 
 ### skey_message_t
 
@@ -573,6 +616,40 @@ typedef struct {
 ```
 
 SPSC 事件队列
+
+`capacity` 是 `buffer` 的元素个数，也就是 `config.queue_size`。它不是队列能容纳的消息数量：环形队列始终空出一个槽位来区分"满"与"空"，因此 `queue_size = 16` 构建的队列最多容纳 `15` 条消息。该字段由 `skey_init_group()` 设置
+
+### skey_group_config_t
+
+```c
+typedef struct {
+    uint8_t (*read_cb)(void *user_data);
+    void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
+    skey_callback_mode_t callback_mode;
+    skey_message_t *queue_buffer;
+    uint16_t queue_size;
+    skey_debounce_mode_t press_debounce_mode;
+    skey_debounce_mode_t release_debounce_mode;
+    uint16_t press_debounce_ticks;
+    uint16_t release_debounce_ticks;
+    uint16_t long_press_expired_ticks;
+    uint16_t multi_press_timeout_ticks;
+    uint16_t multi_release_timeout_ticks;
+} skey_group_config_t;
+```
+
+供 `skey_init_group()` 使用的配置。它只被读取一次并拷贝进分组，因此可以是局部变量，也不必事先清零——只要下面用到的字段都被赋值即可
+
+* `read_cb` / `event_cb`：回调，二者均为必需
+* `callback_mode`：`SKEY_CALLBACK_MODE_DEFERRED` 或 `SKEY_CALLBACK_MODE_IMMEDIATE`
+* `queue_buffer` / `queue_size`：队列存储与其元素个数（2 的幂，取值在 `SKEY_MIN_QUEUE_SIZE` 与 `SKEY_MAX_QUEUE_SIZE` 之间）；延迟模式必需，立即模式忽略
+* `press_debounce_mode` / `release_debounce_mode`：手势层如何响应信号层，`SKEY_DEBOUNCE_MODE_DEFER` 等消抖确认，`SKEY_DEBOUNCE_MODE_EAGER` 在电平跳变时立即响应
+* `press_debounce_ticks` / `release_debounce_ticks`：消抖时间，至少为 `1`
+* `long_press_expired_ticks`：长按判定阈值
+* `multi_press_timeout_ticks`：按下期间多击超时
+* `multi_release_timeout_ticks`：释放期间多击超时
+
+本库不做默认值填充：字段留 `0` 就保持 `0`，因此请为每个依赖的字段赋值
 
 ### skey_group_t
 
@@ -606,7 +683,7 @@ typedef struct {
 * `multi_release_timeout_ticks`：释放期间多击超时
 * `queue`：事件队列
 
-使用前必须零初始化。全局与静态变量会自动清零，栈上或堆上的对象必须显式清零（例如使用 `memset()`）
+请使用 `skey_init_group()` 创建，而不是手工填充字段
 
 ## 宏与枚举
 
@@ -665,3 +742,15 @@ typedef enum {
 按下次数上限，值为 `0xFF`（`255`）
 
 达到该值后 `press_count` 不再增加
+
+### SKEY_MAX_QUEUE_SIZE
+
+队列缓冲区元素个数上限，值为 `256`
+
+由于环形队列始终空出一个槽位，这样的队列最多容纳 255 条消息
+
+### SKEY_MIN_QUEUE_SIZE
+
+队列缓冲区元素个数下限，值为 `2`
+
+`2` 个元素的队列最多容纳 1 条消息

@@ -36,37 +36,44 @@ Add the following files to your project:
 
 ## Quick Start
 
-### 1. Create Keys and a Group
+### 1. Create Keys, a Buffer and a Config
 
 ```c
 #define KEY_NUM 2
 
 skey_t keys[KEY_NUM];
 skey_group_t group;
-skey_message_t queue_buffer[16];
+skey_group_config_t config;         /* initializes group, may be a local */
+skey_message_t queue_buffer[16];    /* queue_size must be a power of two */
 ```
 
-Both `skey_t` and `skey_group_t` must be zero-initialized (automatic when declared as global or static objects). Objects on the stack or heap must be cleared explicitly, e.g. with `memset()`. The library provides no initialization function and does not validate the initial state, so a non-zeroed object leads to undefined behavior.
+`skey_t` and `skey_group_t` are initialized by `skey_init_key()` and `skey_init_group()`, so they do not need to be zero-initialized beforehand. `config` is a plain value that is only read, so it may live on the stack.
 
-### 2. Configure the Group
+### 2. Configure and Initialize the Group
 
 ```c
-group.read_cb = skey_read_cb;
-group.event_cb = skey_event_cb;
-group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+config.read_cb = skey_read_cb;
+config.event_cb = skey_event_cb;
+config.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
 
-group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+config.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+config.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
 
-group.press_debounce_ticks = 1;
-group.release_debounce_ticks = 1;
-group.long_press_expired_ticks = 100;
-group.multi_press_timeout_ticks = 30;
-group.multi_release_timeout_ticks = 30;
+config.press_debounce_ticks = 1;
+config.release_debounce_ticks = 1;
+config.long_press_expired_ticks = 100;
+config.multi_press_timeout_ticks = 30;
+config.multi_release_timeout_ticks = 30;
 
-group.queue.buffer = queue_buffer;
-group.queue.capacity = 16;
+config.queue_buffer = queue_buffer; /* required in deferred mode */
+config.queue_size = 16;             /* elements in queue_buffer */
+
+skey_init_key(&keys[0], (void *)KEY1_PIN);
+skey_init_key(&keys[1], (void *)KEY2_PIN);
+skey_init_group(&group, &config);
 ```
+
+Every field of `config` is copied into `group`, so `config` does not have to stay alive after `skey_init_group()` returns. In `SKEY_CALLBACK_MODE_DEFERRED` mode `queue_buffer` and `queue_size` are required; in `SKEY_CALLBACK_MODE_IMMEDIATE` mode they are ignored and may be left at `0`.
 
 ### 3. Implement the Read Callback
 
@@ -92,7 +99,6 @@ void skey_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
 ```
 
 `events` is a bitmask; multiple events may be delivered in a single callback, so test them with bitwise AND.
-
 ### 5. Scan Keys Periodically
 
 ```c
@@ -125,6 +131,7 @@ while (1) {
 
 skey_t keys[KEY_NUM];
 skey_group_t group;
+skey_group_config_t config;
 skey_message_t queue_buffer[16];
 
 uint8_t skey_read_cb(void *user_data) {
@@ -147,21 +154,22 @@ void timer_callback(void) {
 int main(void) {
     hardware_init();
 
-    keys[0].user_data = (void *)KEY1_PIN;
-    keys[1].user_data = (void *)KEY2_PIN;
+    config.read_cb = skey_read_cb;
+    config.event_cb = skey_event_cb;
+    config.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
+    config.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    config.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
+    config.press_debounce_ticks = 1;
+    config.release_debounce_ticks = 1;
+    config.long_press_expired_ticks = 100;
+    config.multi_press_timeout_ticks = 30;
+    config.multi_release_timeout_ticks = 30;
+    config.queue_buffer = queue_buffer;
+    config.queue_size = 16;
 
-    group.read_cb = skey_read_cb;
-    group.event_cb = skey_event_cb;
-    group.callback_mode = SKEY_CALLBACK_MODE_DEFERRED;
-    group.press_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.release_debounce_mode = SKEY_DEBOUNCE_MODE_DEFER;
-    group.press_debounce_ticks = 1;
-    group.release_debounce_ticks = 1;
-    group.long_press_expired_ticks = 100;
-    group.multi_press_timeout_ticks = 30;
-    group.multi_release_timeout_ticks = 30;
-    group.queue.buffer = queue_buffer;
-    group.queue.capacity = 16;
+    skey_init_key(&keys[0], (void *)KEY1_PIN);
+    skey_init_key(&keys[1], (void *)KEY2_PIN);
+    skey_init_group(&group, &config);
 
     while (1) {
         skey_dispatch(8, &group);
@@ -305,7 +313,7 @@ The signal layer emits events both on level transitions and on debounce confirma
 | `SKEY_DEBOUNCE_MODE_DEFER` | React after debounce confirmation (more bounce-resistant)          |
 | `SKEY_DEBOUNCE_MODE_EAGER` | React immediately on level transition (lower latency, less filtering) |
 
-Press and release debouncing are configured independently through `group.press_debounce_mode` and `group.release_debounce_mode`.
+Press and release debouncing are configured independently through `config.press_debounce_mode` and `config.release_debounce_mode`, which `skey_init_group()` copies into the group.
 
 ### Events
 
@@ -415,19 +423,19 @@ Events within a group are passed through a single-producer single-consumer (SPSC
 
 ```c
 typedef struct {
-    skey_message_t *buffer;   /* user-provided buffer */
-    uint8_t capacity;         /* buffer element count, a power of two (max 128 for uint8_t) */
+    skey_message_t *buffer;   /* user-provided buffer of queue_size elements */
+    uint8_t capacity;         /* index mask = queue_size - 1, set by skey_init_group() */
     volatile uint8_t write_index;
     volatile uint8_t read_index;
 } skey_queue_t;
 ```
 
-`capacity` is the number of elements in `buffer`, not the number of messages that can be queued: the ring buffer always leaves one slot free to tell a full queue from an empty one, so a queue with `capacity` holds at most `capacity - 1` messages.
+`capacity` is the index mask maintained by `skey_init_group()`: `buffer` holds `capacity + 1` elements, and at most `capacity` messages can be queued. The ring always keeps one slot free to tell a full queue from an empty one, so a queue built from `queue_size = 16` holds 15 messages.
 
 Requirements:
 
-* When `buffer` is not `NULL`, `capacity` must be a power of two and at least `2`
-* When `buffer` is `NULL`, deferred events are dropped (immediate mode is unaffected)
+* `config.queue_size` is the element count of `queue_buffer`: a power of two between `SKEY_MIN_QUEUE_SIZE` (`2`) and `SKEY_MAX_QUEUE_SIZE` (`256`)
+* In `SKEY_CALLBACK_MODE_IMMEDIATE` mode the queue is unused and these fields may be left at `0`
 * When the queue is full, events are dropped and the return value of `skey_scan()` accumulates the number of drops
 
 ### Concurrency Model
@@ -471,6 +479,45 @@ The following APIs must follow the SPSC model: only one execution context may ca
 
 ## API Reference
 
+### skey_init_key
+
+```c
+void skey_init_key(skey_t *key, void *user_data);
+```
+
+Initialize one key and bind its user data.
+
+**Parameters**
+
+* `key` - Key object to initialize, must not be `NULL`
+* `user_data` - Value passed back to `read_cb` and `event_cb` for this key, may be `NULL`
+
+The whole key state is cleared, so calling this on an uninitialized object is safe.
+
+---
+
+### skey_init_group
+
+```c
+void skey_init_group(skey_group_t *group, const skey_group_config_t *config);
+```
+
+Initialize a group from a configuration.
+
+**Parameters**
+
+* `group` - Group object to initialize, must not be `NULL`; its previous contents are discarded
+* `config` - Configuration to copy, must not be `NULL` and is not modified
+
+**Notes**
+
+* `config->read_cb` and `config->event_cb` must not be `NULL`
+* In `SKEY_CALLBACK_MODE_DEFERRED` mode, `config->queue_buffer` must not be `NULL` and `config->queue_size` must be a power of two between `SKEY_MIN_QUEUE_SIZE` (`2`) and `SKEY_MAX_QUEUE_SIZE` (`256`)
+* In `SKEY_CALLBACK_MODE_IMMEDIATE` mode the queue fields are ignored
+* Every field is copied, so `config` may be a local that goes out of scope afterwards
+
+---
+
 ### skey_scan
 
 ```c
@@ -484,18 +531,13 @@ Scan key states.
 
 **Parameters**
 
-* `keys` - Key object array
+* `keys` - Key object array, must not be `NULL` and must have been initialized with `skey_init_key()`
 * `key_count` - Number of keys
-* `group` - Group the keys belong to
+* `group` - Group the keys belong to, must not be `NULL`
 
 **Return Value**
 
 * `int` - Number of events that could not be enqueued because the queue was full (always `0` in immediate mode); check it if you need to notice dropped events
-
-**Notes**
-
-* `keys`, `group`, `group->read_cb`, and `group->event_cb` must not be `NULL`
-* When `group->queue.buffer` is not `NULL`, `group->queue.capacity` must be a power of two and at least `2`
 
 ---
 
@@ -547,7 +589,7 @@ typedef struct {
 * `state` - packed signal state, gesture state, and flags
 * `user_data` - user data passed to the read/event callbacks
 
-Must be zero-initialized before use. Global and static objects are zero-initialized automatically; stack and heap objects must be cleared explicitly (e.g. with `memset()`).
+Create it with `skey_init_key()`, which clears the whole object and binds the user data. The internal fields are managed by the library and must not be written directly.
 
 ### skey_message_t
 
@@ -573,6 +615,38 @@ typedef struct {
 ```
 
 SPSC event queue.
+
+### skey_group_config_t
+
+```c
+typedef struct {
+    uint8_t (*read_cb)(void *user_data);
+    void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
+    skey_callback_mode_t callback_mode;
+    skey_message_t *queue_buffer;
+    uint16_t queue_size;
+    skey_debounce_mode_t press_debounce_mode;
+    skey_debounce_mode_t release_debounce_mode;
+    uint16_t press_debounce_ticks;
+    uint16_t release_debounce_ticks;
+    uint16_t long_press_expired_ticks;
+    uint16_t multi_press_timeout_ticks;
+    uint16_t multi_release_timeout_ticks;
+} skey_group_config_t;
+```
+
+Configuration consumed by `skey_init_group()`. It is read once and copied into the group, so it may be a local value and does not have to be initialized to anything beforehand as long as every field used below is assigned.
+
+* `read_cb` / `event_cb` - callbacks, both required
+* `callback_mode` - `SKEY_CALLBACK_MODE_DEFERRED` or `SKEY_CALLBACK_MODE_IMMEDIATE`
+* `queue_buffer` / `queue_size` - queue storage and its element count (a power of two between `SKEY_MIN_QUEUE_SIZE` and `SKEY_MAX_QUEUE_SIZE`); required in deferred mode, ignored in immediate mode
+* `press_debounce_mode` / `release_debounce_mode` - how the gesture layer reacts to the signal layer: `SKEY_DEBOUNCE_MODE_DEFER` waits for the debounce to confirm, `SKEY_DEBOUNCE_MODE_EAGER` reacts on the level change
+* `press_debounce_ticks` / `release_debounce_ticks` - debounce durations, at least `1`
+* `long_press_expired_ticks` - long-press threshold
+* `multi_press_timeout_ticks` - multi-press timeout while pressed
+* `multi_release_timeout_ticks` - multi-press timeout while released
+
+No defaulting is applied: a field left at `0` keeps the value `0`, so assign every field you rely on.
 
 ### skey_group_t
 
@@ -606,7 +680,7 @@ A group is not a collection of keys: it holds the callbacks, the configuration, 
 * `multi_release_timeout_ticks` - multi-press timeout while released
 * `queue` - event queue
 
-Must be zero-initialized before use. Global and static objects are zero-initialized automatically; stack and heap objects must be cleared explicitly (e.g. with `memset()`).
+Create it with `skey_init_group()` rather than filling it in by hand.
 
 ## Macros and Enums
 
@@ -665,3 +739,15 @@ Maximum tick counter value, `0xFFFF` (`65535`).
 Maximum press count, `0xFF` (`255`).
 
 `press_count` stops increasing once this value is reached.
+
+### SKEY_MAX_QUEUE_SIZE
+
+Maximum number of elements of a queue buffer (`256`).
+
+Because the ring buffer always leaves one slot free, such a queue holds at most 255 messages.
+
+### SKEY_MIN_QUEUE_SIZE
+
+Minimum number of elements of a queue buffer (`2`).
+
+A queue of `2` elements holds at most one message.
