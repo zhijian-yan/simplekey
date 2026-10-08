@@ -17,10 +17,6 @@
 #ifndef SIMPLEKEY_H
 #define SIMPLEKEY_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 /**
@@ -35,6 +31,10 @@ extern "C" {
 #include SKEY_PORT_HEADER
 #else
 #include "simplekey_port.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /**

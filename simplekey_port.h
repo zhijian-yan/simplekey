@@ -20,6 +20,10 @@
 #ifndef SIMPLEKEY_PORT_H
 #define SIMPLEKEY_PORT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Enter the critical section.
  *
@@ -89,5 +93,9 @@ static inline void skey_unlock(int skey_lock_state) {
  *       SKEY_ACQUIRE().
  */
 #define SKEY_RELEASE() ((void)0)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
