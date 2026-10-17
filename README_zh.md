@@ -1,19 +1,15 @@
-<h1 align="center">simplekey</h1>
+<h1 align="center">SimpleKey</h1>
 
-<p align="center">
-<a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
-</p>
+<p align="center"><a href="README.md">English</a> | <a href="README_zh.md">简体中文</a></p>
 
-<p align="center">
-轻量级嵌入式按键扫描库
-</p>
+<p align="center"><em>轻量级嵌入式按键扫描</em></p>
 
 <p align="center">
 <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square"></a>
 <img alt="Language" src="https://img.shields.io/badge/language-C99-blue.svg?style=flat-square">
 <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen.svg?style=flat-square">
 <img alt="Dynamic memory" src="https://img.shields.io/badge/dynamic_memory-none-brightgreen.svg?style=flat-square">
-<img alt="Platform" src="https://img.shields.io/badge/platform-bare--metal_%7C_RTOS_%7C_Linux-lightgrey.svg?style=flat-square">
+<img alt="Platform" src="https://img.shields.io/badge/platform-bare--metal_%7C_RTOS-lightgrey.svg?style=flat-square">
 </p>
 
 ## 特性
@@ -31,24 +27,24 @@
 
 ## 移植
 
-移植时直接在 `simplekey_port.h` 中实现下列四个平台钩子即可；该文件属于应用，升级库时保留自己的版本
+移植 SimpleKey 时，在 `simplekey_port.h` 中实现下列四个钩子即可；该文件属于应用，升级库时保留自己的版本
 
 ### 平台钩子
 
 | 钩子 | 作用 |
 | ---- | ---- |
 | `int skey_lock(void)` | 进入临界区，保护单颗按键的状态更新，返回进入前的状态 |
-| `void skey_unlock(int state)` | 退出临界区，并恢复 `skey_lock()` 返回的状态 |
-| `SKEY_ACQUIRE()` | 读取队列索引之后、读取该索引所发布的事件之前执行的顺序屏障 |
-| `SKEY_RELEASE()` | 写入发布事件的队列索引之前执行的顺序屏障 |
+| `void skey_unlock(int state)` | 退出临界区，恢复 `skey_lock()` 返回的状态 |
+| `SKEY_ACQUIRE()` | 读取队列索引后、访问该索引发布的事件前的顺序屏障 |
+| `SKEY_RELEASE()` | 写入发布事件的队列索引前的顺序屏障 |
 
 ### 默认实现
 
-库内提供的钩子默认实现全部为空操作。在 32 位单核平台上，或每个分组只由一个执行上下文驱动时，可以直接使用默认实现，无需编写任何移植代码：库访问的字段都是自然对齐的 32 位及以下宽度，单上下文访问不会被撕裂，也不需要任何顺序屏障。
+库内钩子默认全为空操作，适用于 32 位单核，或每组只有一个执行上下文的情况：库访问的字段都自然对齐且不超过 32 位，单上下文访问不会被撕裂，也不需要顺序屏障。
 
 ### 示例：裸机
 
-中断服务函数可能抢占库调用，因此锁需要保存并恢复中断屏蔽状态。单核无需顺序屏障，`SKEY_ACQUIRE()` / `SKEY_RELEASE()` 保持库内默认实现即可。若扫描本身在中断中执行，建议改用 `SKEY_CALLBACK_MODE_DEFERRED`，并在任务或主循环中分发事件，避免在中断上下文执行事件回调。
+中断可能抢占库调用，因此锁需要保存并恢复中断屏蔽状态；单核无需顺序屏障。扫描在中断中执行时，建议用 `SKEY_CALLBACK_MODE_DEFERRED`，在任务或主循环中分发，避免回调在中断上下文中执行。
 
 ```c
 /* simplekey_port.h */
@@ -67,7 +63,7 @@ static inline void skey_unlock(int skey_lock_state) {
 
 ### 示例：RTOS
 
-应使用 RTOS 的临界区：仅关中断无法覆盖临界区内的任务切换。`taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` 支持嵌套，因此无需保存状态；RT-Thread 可用 `rt_enter_critical()` / `rt_exit_critical()`，或用 `rt_hw_interrupt_disable()` / `rt_hw_interrupt_enable()` 恢复返回的中断级别。单核同样无需顺序屏障。
+`skey_scan()` 可能在任务或定时器中断中执行；用 `xPortIsInsideInterrupt()`（Cortex-M 端口提供）选择对应的 FreeRTOS 临界区：
 
 ```c
 /* simplekey_port.h */
@@ -75,25 +71,35 @@ static inline void skey_unlock(int skey_lock_state) {
 #include "task.h"
 
 static inline int skey_lock(void) {
+    if (xPortIsInsideInterrupt()) {
+        return (int)taskENTER_CRITICAL_FROM_ISR();
+    }
     taskENTER_CRITICAL();
     return 0;
 }
 
 static inline void skey_unlock(int skey_lock_state) {
-    (void)skey_lock_state;
-    taskEXIT_CRITICAL();
+    if (xPortIsInsideInterrupt()) {
+        taskEXIT_CRITICAL_FROM_ISR((UBaseType_t)skey_lock_state);
+    } else {
+        taskEXIT_CRITICAL();
+    }
 }
 ```
 
+`taskENTER_CRITICAL_FROM_ISR()` 要求中断优先级数值不小于 `configMAX_SYSCALL_INTERRUPT_PRIORITY`。扫描仅在任务中执行时用 `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()`，仅在中断中执行时用 `_FROM_ISR` 版本。互斥锁不能在中断中使用。
+
+单核无需顺序屏障，保持库内默认的 `SKEY_ACQUIRE()` / `SKEY_RELEASE()` 即可。
+
 ### 示例：多核
 
-需要所有核共享的锁，以及真正的顺序屏障：`volatile` 本身不保证顺序，否则一个核可能先看到队列索引、后看到该索引发布的事件。取自旋锁前必须先屏蔽本地中断，否则中断一旦抢占持锁上下文就会死锁。
+锁必须由所有核共享，队列需要真正的顺序屏障：`volatile` 不保证顺序，一个核可能先看到索引、后看到事件。取自旋锁前先屏蔽本地中断，否则中断抢占持锁者会死锁。
 
 ```c
 /* simplekey_port.h */
 #include "cmsis_compiler.h"
 
-/* skey_spinlock 与 spin_lock() / spin_unlock() 均由 SoC 提供 */
+/* skey_spinlock 由 SoC 支持代码只定义一次；spin_lock() / spin_unlock() 由 SoC 提供 */
 static inline int skey_lock(void) {
     int state = __get_PRIMASK();
     __disable_irq();
@@ -110,36 +116,14 @@ static inline void skey_unlock(int skey_lock_state) {
 #define SKEY_RELEASE() __DMB()
 ```
 
-### 示例：宿主平台（Linux）
+`simplekey_port.h` 每个编译单元展开一次，因此 `skey_spinlock` 必须在全程序只定义一次（SoC 代码或某个 `.c` 文件），头文件里只做 `extern` 声明；每个编译单元一把锁不会互斥。
 
-做宿主工具、单元测试、仿真或用户态 Linux 驱动时，只要同一个分组只由一个线程使用，直接沿用默认实现即可。多个线程共享一个分组时改用互斥锁；若宿主平台是弱内存模型，还需要真正的屏障。
-
-```c
-/* simplekey_port.h */
-#include <pthread.h>
-
-static pthread_mutex_t skey_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static inline int skey_lock(void) {
-    pthread_mutex_lock(&skey_mutex);
-    return 0;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    (void)skey_lock_state;
-    pthread_mutex_unlock(&skey_mutex);
-}
-
-#define SKEY_ACQUIRE() __atomic_thread_fence(__ATOMIC_ACQUIRE)
-#define SKEY_RELEASE() __atomic_thread_fence(__ATOMIC_RELEASE)
-```
-
-`simplekey_port.h` 会被每个包含库头的编译单元各展开一份，因此上面的互斥锁也是每个编译单元一份：若多个模块都会调用本库，请把互斥锁放到其中一个 `.c` 文件中定义，这里改为 `extern`。
+钩子不会嵌套，非递归自旋锁即可；自旋锁本身需具备 acquire/release 语义，临界区要短。`SKEY_ACQUIRE()` / `SKEY_RELEASE()` 只保证队列交接的顺序，不能替代锁。缓存不一致时屏障不够：共享数据要放在非缓存内存，或显式维护缓存。
 
 ### 注意事项
 
-* 钩子实现需保持无状态，嵌套的加解锁需正确恢复最外层状态：`static inline` 定义对每个编译单元都是私有的，函数内的静态变量会变成每个编译单元一份，而不是整个程序一份
-* 临界区只覆盖按键状态更新，事件入队与事件回调均在临界区之外执行
+* 钩子实现需保持无状态：`static inline` 定义对每个编译单元私有，函数内静态变量会变成每个编译单元一份，而不是整个程序一份；若实现允许嵌套，解锁需恢复最外层状态
+* 临界区只覆盖按键状态更新，事件入队与事件回调都在临界区之外
 
 ## 使用方法
 

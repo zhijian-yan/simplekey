@@ -1,19 +1,15 @@
-<h1 align="center">simplekey</h1>
+<h1 align="center">SimpleKey</h1>
 
-<p align="center">
-<a href="README.md">English</a> | <a href="README_zh.md">简体中文</a>
-</p>
+<p align="center"><a href="README.md">English</a> | <a href="README_zh.md">简体中文</a></p>
 
-<p align="center">
-Lightweight Embedded Key Scanning Library
-</p>
+<p align="center"><em>Lightweight key scanning for embedded systems</em></p>
 
 <p align="center">
 <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square"></a>
 <img alt="Language" src="https://img.shields.io/badge/language-C99-blue.svg?style=flat-square">
 <img alt="Dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen.svg?style=flat-square">
 <img alt="Dynamic memory" src="https://img.shields.io/badge/dynamic_memory-none-brightgreen.svg?style=flat-square">
-<img alt="Platform" src="https://img.shields.io/badge/platform-bare--metal_%7C_RTOS_%7C_Linux-lightgrey.svg?style=flat-square">
+<img alt="Platform" src="https://img.shields.io/badge/platform-bare--metal_%7C_RTOS-lightgrey.svg?style=flat-square">
 </p>
 
 ## Features
@@ -31,24 +27,24 @@ Lightweight Embedded Key Scanning Library
 
 ## Porting
 
-Porting simplekey means implementing the four platform hooks directly in `simplekey_port.h`; that file belongs to the application, so keep your own version when the library is updated.
+Porting SimpleKey means implementing the four hooks in `simplekey_port.h`; that file belongs to the application, so keep your own version across updates.
 
 ### Hooks
 
 | Hook | Role |
 | ---- | ---- |
-| `int skey_lock(void)` | Enters the critical section around the state update of one key and returns the previous state |
-| `void skey_unlock(int state)` | Leaves the critical section and restores the state returned by `skey_lock()` |
-| `SKEY_ACQUIRE()` | Ordering barrier taken after a queue index has been loaded and before the event it publishes is read |
-| `SKEY_RELEASE()` | Ordering barrier taken right before the queue index that publishes an event is stored |
+| `int skey_lock(void)` | Enters the critical section around one key's state update; returns the previous state |
+| `void skey_unlock(int state)` | Leaves the critical section and restores the state from `skey_lock()` |
+| `SKEY_ACQUIRE()` | Ordering barrier after a queue index load, before the event it publishes is accessed |
+| `SKEY_RELEASE()` | Ordering barrier before the queue index that publishes an event is stored |
 
 ### Default implementation
 
-The shipped hooks are all no-ops. They can be used as they are, without writing any porting code, on a 32-bit single-core target or while a group is driven by a single execution context: every field the library touches is a naturally aligned value of 32 bits or less, so a single-context access cannot be torn and no ordering barrier is needed.
+The shipped hooks are no-ops. They are sufficient on a 32-bit single-core target or while a group is driven by one execution context: every field the library touches is naturally aligned and at most 32 bits, so a single-context access cannot tear and needs no ordering barrier.
 
 ### Example: bare metal
 
-An interrupt handler may preempt the library calls, so the lock has to save and restore the interrupt mask. A single core needs no ordering barrier, so `SKEY_ACQUIRE()` / `SKEY_RELEASE()` keep their shipped definition. When the scan itself runs in an interrupt handler, prefer `SKEY_CALLBACK_MODE_DEFERRED` and dispatch from a task or the main loop, so that the event callback is not executed in interrupt context.
+An interrupt handler may preempt the library calls, so the lock must save and restore the interrupt mask; a single core needs no ordering barrier. When the scan runs in an interrupt handler, prefer `SKEY_CALLBACK_MODE_DEFERRED` and dispatch from a task or the main loop, so the event callback does not run in interrupt context.
 
 ```c
 /* simplekey_port.h */
@@ -67,7 +63,7 @@ static inline void skey_unlock(int skey_lock_state) {
 
 ### Example: RTOS
 
-Use the critical section of the RTOS: disabling interrupts alone does not cover a task switch inside the critical section. `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()` are nestable, so the saved state is unused; with RT-Thread use `rt_enter_critical()` / `rt_exit_critical()`, or `rt_hw_interrupt_disable()` / `rt_hw_interrupt_enable()` with the returned level. A single core still needs no ordering barrier.
+`skey_scan()` may run in a task or a timer ISR; select the matching FreeRTOS critical section with `xPortIsInsideInterrupt()` (Cortex-M ports):
 
 ```c
 /* simplekey_port.h */
@@ -75,25 +71,36 @@ Use the critical section of the RTOS: disabling interrupts alone does not cover 
 #include "task.h"
 
 static inline int skey_lock(void) {
+    if (xPortIsInsideInterrupt()) {
+        return (int)taskENTER_CRITICAL_FROM_ISR();
+    }
     taskENTER_CRITICAL();
     return 0;
 }
 
 static inline void skey_unlock(int skey_lock_state) {
-    (void)skey_lock_state;
-    taskEXIT_CRITICAL();
+    if (xPortIsInsideInterrupt()) {
+        taskEXIT_CRITICAL_FROM_ISR((UBaseType_t)skey_lock_state);
+    } else {
+        taskEXIT_CRITICAL();
+    }
 }
 ```
 
+`taskENTER_CRITICAL_FROM_ISR()` requires an ISR priority at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY` (numerically greater than or equal to it on Cortex-M). For a task-only scan, use `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()`; for an ISR-only scan, the `_FROM_ISR` pair. A mutex is not ISR-safe.
+
+A single core needs no ordering barrier, so keep the shipped `SKEY_ACQUIRE()` / `SKEY_RELEASE()`.
+
 ### Example: multi-core
 
-A lock shared by every core and real ordering barriers are both required: `volatile` alone provides no ordering, so one core could otherwise observe a queue index before the event it publishes. Mask the local interrupts before taking the spinlock, because a spinlock that does not mask them deadlocks as soon as an ISR preempts the context holding it.
+One lock must be shared by every core, and the queue needs real ordering barriers: `volatile` alone gives no ordering, so a core could see the index before the event. Mask local interrupts before taking the spinlock; otherwise an ISR that preempts the holder deadlocks.
 
 ```c
 /* simplekey_port.h */
 #include "cmsis_compiler.h"
 
-/* skey_spinlock and spin_lock() / spin_unlock() come from the SoC */
+/* skey_spinlock is defined once by the SoC support code;
+   spin_lock() / spin_unlock() come from the SoC */
 static inline int skey_lock(void) {
     int state = __get_PRIMASK();
     __disable_irq();
@@ -110,36 +117,14 @@ static inline void skey_unlock(int skey_lock_state) {
 #define SKEY_RELEASE() __DMB()
 ```
 
-### Example: hosted target (Linux)
+The port header is expanded once per translation unit, so define `skey_spinlock` exactly once for the whole program (SoC code or one `.c` file) and only declare it `extern` here; per-TU copies do not exclude each other.
 
-For host tools, unit tests, simulations and user-space Linux drivers, the default hooks are enough while a single thread uses the group. When several threads share a group, use a mutex and real fences if the host has a weak memory model.
-
-```c
-/* simplekey_port.h */
-#include <pthread.h>
-
-static pthread_mutex_t skey_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static inline int skey_lock(void) {
-    pthread_mutex_lock(&skey_mutex);
-    return 0;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    (void)skey_lock_state;
-    pthread_mutex_unlock(&skey_mutex);
-}
-
-#define SKEY_ACQUIRE() __atomic_thread_fence(__ATOMIC_ACQUIRE)
-#define SKEY_RELEASE() __atomic_thread_fence(__ATOMIC_RELEASE)
-```
-
-`simplekey_port.h` is expanded once per translation unit that includes the library header, so the mutex above exists once per translation unit: when several modules use the library, define the mutex in one `.c` file and declare it `extern` here instead.
+The hooks never nest, so a non-recursive spinlock is enough. It must provide acquire/release semantics, and the critical section must stay short. `SKEY_ACQUIRE()` / `SKEY_RELEASE()` order the queue handoff only; they do not replace the lock. With non-coherent caches, barriers are not enough: use non-cacheable memory or explicit cache maintenance.
 
 ### Notes
 
-* Keep the hooks stateless and let a nested lock/unlock pair restore the state of the outermost pair: a `static inline` definition is private to each translation unit, so a function-local static variable would exist once per translation unit instead of once per program
-* The critical section covers the key state update only; queueing and the event callback run outside of it
+* Keep the hooks stateless: a `static inline` definition is private per translation unit, so a function-local static would exist once per TU, not once per program; if nesting is supported, unlock must restore the outermost state
+* The lock covers the key state update only; queueing and the event callback run outside it
 
 ## Usage
 
