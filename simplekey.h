@@ -3,7 +3,7 @@
 
 /**
  * @file
- * @brief Public interface of simplekey.
+ * @brief Public interface of SimpleKey.
  *
  * Declares the key object, the group that holds the callbacks and the
  * configuration shared by a set of keys, and the event queue a group uses. The
