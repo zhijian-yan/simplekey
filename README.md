@@ -23,108 +23,36 @@
 * Immediate and deferred callbacks
 * Event queue buffer provided by the application; dropped events are counted and reported
 * No dynamic memory allocation, no OS dependency, C99
-* The platform-specific critical section and ordering barriers are isolated behind porting hooks
+* The platform-specific queue ordering barriers are isolated behind porting hooks
 
 ## Porting
 
-Porting SimpleKey means implementing the four hooks in `simplekey_port.h`; that file belongs to the application, so keep your own version across updates.
+Porting SimpleKey means implementing the two hooks in `simplekey_port.h`; that file belongs to the application, so keep your own version across updates.
 
 ### Hooks
 
 | Hook | Role |
 | ---- | ---- |
-| `int skey_lock(void)` | Enters the critical section around one key's state update; returns the previous state |
-| `void skey_unlock(int state)` | Leaves the critical section and restores the state from `skey_lock()` |
 | `SKEY_ACQUIRE()` | Ordering barrier after a queue index load, before the event it publishes is accessed |
 | `SKEY_RELEASE()` | Ordering barrier before the queue index that publishes an event is stored |
 
 ### Default implementation
 
-The shipped hooks are no-ops. They are sufficient on a 32-bit single-core target or while a group is driven by one execution context: every field the library touches is naturally aligned and at most 32 bits, so a single-context access cannot tear and needs no ordering barrier.
-
-### Example: bare metal
-
-An interrupt handler may preempt the library calls, so the lock must save and restore the interrupt mask; a single core needs no ordering barrier. When the scan runs in an interrupt handler, prefer `SKEY_CALLBACK_MODE_DEFERRED` and dispatch from a task or the main loop, so the event callback does not run in interrupt context.
-
-```c
-/* simplekey_port.h */
-#include "cmsis_compiler.h" /* CMSIS 5; include core_cm*.h on older versions */
-
-static inline int skey_lock(void) {
-    int state = __get_PRIMASK();
-    __disable_irq();
-    return state;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    __set_PRIMASK(skey_lock_state);
-}
-```
-
-### Example: RTOS
-
-`skey_scan()` may run in a task or a timer ISR; select the matching FreeRTOS critical section with `xPortIsInsideInterrupt()` (Cortex-M ports):
-
-```c
-/* simplekey_port.h */
-#include "FreeRTOS.h"
-#include "task.h"
-
-static inline int skey_lock(void) {
-    if (xPortIsInsideInterrupt()) {
-        return (int)taskENTER_CRITICAL_FROM_ISR();
-    }
-    taskENTER_CRITICAL();
-    return 0;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    if (xPortIsInsideInterrupt()) {
-        taskEXIT_CRITICAL_FROM_ISR((UBaseType_t)skey_lock_state);
-    } else {
-        taskEXIT_CRITICAL();
-    }
-}
-```
-
-`taskENTER_CRITICAL_FROM_ISR()` requires an ISR priority at or below `configMAX_SYSCALL_INTERRUPT_PRIORITY` (numerically greater than or equal to it on Cortex-M). For a task-only scan, use `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()`; for an ISR-only scan, the `_FROM_ISR` pair. A mutex is not ISR-safe.
-
-A single core needs no ordering barrier, so keep the shipped `SKEY_ACQUIRE()` / `SKEY_RELEASE()`.
+The shipped hooks are no-ops and are sufficient on a single-core target: the event queue is single-producer single-consumer, so its index and event writes need no explicit ordering.
 
 ### Example: multi-core
 
-One lock must be shared by every core, and the queue needs real ordering barriers: `volatile` alone gives no ordering, so a core could see the index before the event. Mask local interrupts before taking the spinlock; otherwise an ISR that preempts the holder deadlocks.
+The queue is single-producer single-consumer, so it only needs real ordering barriers: `volatile` alone gives no ordering, so a core could see the index before the event.
 
 ```c
 /* simplekey_port.h */
 #include "cmsis_compiler.h"
 
-/* skey_spinlock is defined once by the SoC support code;
-   spin_lock() / spin_unlock() come from the SoC */
-static inline int skey_lock(void) {
-    int state = __get_PRIMASK();
-    __disable_irq();
-    spin_lock(&skey_spinlock);
-    return state;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    spin_unlock(&skey_spinlock);
-    __set_PRIMASK(skey_lock_state);
-}
-
 #define SKEY_ACQUIRE() __DMB()
 #define SKEY_RELEASE() __DMB()
 ```
 
-The port header is expanded once per translation unit, so define `skey_spinlock` exactly once for the whole program (SoC code or one `.c` file) and only declare it `extern` here; per-TU copies do not exclude each other.
-
-The hooks never nest, so a non-recursive spinlock is enough. It must provide acquire/release semantics, and the critical section must stay short. `SKEY_ACQUIRE()` / `SKEY_RELEASE()` order the queue handoff only; they do not replace the lock. With non-coherent caches, barriers are not enough: use non-cacheable memory or explicit cache maintenance.
-
-### Notes
-
-* Keep the hooks stateless: a `static inline` definition is private per translation unit, so a function-local static would exist once per TU, not once per program; if nesting is supported, unlock must restore the outermost state
-* The lock covers the key state update only; queueing and the event callback run outside it
+With non-coherent caches, barriers are not enough: use non-cacheable memory or explicit cache maintenance.
 
 ## Usage
 
@@ -207,7 +135,7 @@ for (;;) {
 }
 ```
 
-The return value of `skey_scan()` is the number of events dropped because the event queue was full; it is always 0 in immediate mode. Within a group, `skey_scan()` and `skey_dispatch()` each accept a single execution context; different groups are independent. Here the scan runs in interrupt context and the dispatch in the main loop, so the lock hook must be interrupt safe; if both run in the main loop instead, the shipped default hooks can be used as they are.
+The return value of `skey_scan()` is the number of events dropped because the event queue was full; it is always 0 in immediate mode. Within a group, `skey_scan()` and `skey_dispatch()` each accept a single execution context; different groups are independent. Here the scan runs in interrupt context and the dispatch in the main loop; the event queue is single-producer single-consumer, so the shipped hooks work as they are.
 
 ### 4. Pick the timing values
 

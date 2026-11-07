@@ -247,13 +247,11 @@ int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
         key_count -= 1;
         uint8_t pressed = group->read_cb(keys[key_count].user_data);
         skey_message_t message;
-        int lock_state = skey_lock();
         message.events = skey_scan_signal(&keys[key_count], group, pressed);
         message.events =
             skey_gesture_proc(&keys[key_count], group, message.events);
         message.press_count = keys[key_count].press_count;
         message.user_data = keys[key_count].user_data;
-        skey_unlock(lock_state);
         if (message.events) {
             if (group->callback_mode == SKEY_CALLBACK_MODE_IMMEDIATE) {
                 group->event_cb(message.events, message.press_count,

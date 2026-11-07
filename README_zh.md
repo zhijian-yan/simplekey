@@ -23,107 +23,36 @@
 * 支持立即回调与延迟回调
 * 事件队列缓冲区由用户提供，队列满时丢弃的事件会被计数并返回
 * 无动态内存分配，不依赖操作系统，C99
-* 平台相关的临界区与顺序屏障由钩子层隔离
+* 平台相关的队列顺序屏障由钩子层隔离
 
 ## 移植
 
-移植 SimpleKey 时，在 `simplekey_port.h` 中实现下列四个钩子即可；该文件属于应用，升级库时保留自己的版本
+移植 SimpleKey 时，在 `simplekey_port.h` 中实现下列两个钩子即可；该文件属于应用，升级库时保留自己的版本
 
 ### 平台钩子
 
 | 钩子 | 作用 |
 | ---- | ---- |
-| `int skey_lock(void)` | 进入临界区，保护单颗按键的状态更新，返回进入前的状态 |
-| `void skey_unlock(int state)` | 退出临界区，恢复 `skey_lock()` 返回的状态 |
 | `SKEY_ACQUIRE()` | 读取队列索引后、访问该索引发布的事件前的顺序屏障 |
 | `SKEY_RELEASE()` | 写入发布事件的队列索引前的顺序屏障 |
 
 ### 默认实现
 
-库内钩子默认全为空操作，适用于 32 位单核，或每组只有一个执行上下文的情况：库访问的字段都自然对齐且不超过 32 位，单上下文访问不会被撕裂，也不需要顺序屏障。
-
-### 示例：裸机
-
-中断可能抢占库调用，因此锁需要保存并恢复中断屏蔽状态；单核无需顺序屏障。扫描在中断中执行时，建议用 `SKEY_CALLBACK_MODE_DEFERRED`，在任务或主循环中分发，避免回调在中断上下文中执行。
-
-```c
-/* simplekey_port.h */
-#include "cmsis_compiler.h" /* CMSIS 5；更低版本请包含 core_cm*.h */
-
-static inline int skey_lock(void) {
-    int state = __get_PRIMASK();
-    __disable_irq();
-    return state;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    __set_PRIMASK(skey_lock_state);
-}
-```
-
-### 示例：RTOS
-
-`skey_scan()` 可能在任务或定时器中断中执行；用 `xPortIsInsideInterrupt()`（Cortex-M 端口提供）选择对应的 FreeRTOS 临界区：
-
-```c
-/* simplekey_port.h */
-#include "FreeRTOS.h"
-#include "task.h"
-
-static inline int skey_lock(void) {
-    if (xPortIsInsideInterrupt()) {
-        return (int)taskENTER_CRITICAL_FROM_ISR();
-    }
-    taskENTER_CRITICAL();
-    return 0;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    if (xPortIsInsideInterrupt()) {
-        taskEXIT_CRITICAL_FROM_ISR((UBaseType_t)skey_lock_state);
-    } else {
-        taskEXIT_CRITICAL();
-    }
-}
-```
-
-`taskENTER_CRITICAL_FROM_ISR()` 要求中断优先级数值不小于 `configMAX_SYSCALL_INTERRUPT_PRIORITY`。扫描仅在任务中执行时用 `taskENTER_CRITICAL()` / `taskEXIT_CRITICAL()`，仅在中断中执行时用 `_FROM_ISR` 版本。互斥锁不能在中断中使用。
-
-单核无需顺序屏障，保持库内默认的 `SKEY_ACQUIRE()` / `SKEY_RELEASE()` 即可。
+库内钩子默认全为空操作，适用于单核：事件队列为单生产者单消费者，队列索引与事件写入无需显式顺序保证。
 
 ### 示例：多核
 
-锁必须由所有核共享，队列需要真正的顺序屏障：`volatile` 不保证顺序，一个核可能先看到索引、后看到事件。取自旋锁前先屏蔽本地中断，否则中断抢占持锁者会死锁。
+队列为单生产者单消费者，只需要真正的顺序屏障：`volatile` 不保证顺序，一个核可能先看到索引、后看到事件。
 
 ```c
 /* simplekey_port.h */
 #include "cmsis_compiler.h"
 
-/* skey_spinlock 由 SoC 支持代码只定义一次；spin_lock() / spin_unlock() 由 SoC 提供 */
-static inline int skey_lock(void) {
-    int state = __get_PRIMASK();
-    __disable_irq();
-    spin_lock(&skey_spinlock);
-    return state;
-}
-
-static inline void skey_unlock(int skey_lock_state) {
-    spin_unlock(&skey_spinlock);
-    __set_PRIMASK(skey_lock_state);
-}
-
 #define SKEY_ACQUIRE() __DMB()
 #define SKEY_RELEASE() __DMB()
 ```
 
-`simplekey_port.h` 每个编译单元展开一次，因此 `skey_spinlock` 必须在全程序只定义一次（SoC 代码或某个 `.c` 文件），头文件里只做 `extern` 声明；每个编译单元一把锁不会互斥。
-
-钩子不会嵌套，非递归自旋锁即可；自旋锁本身需具备 acquire/release 语义，临界区要短。`SKEY_ACQUIRE()` / `SKEY_RELEASE()` 只保证队列交接的顺序，不能替代锁。缓存不一致时屏障不够：共享数据要放在非缓存内存，或显式维护缓存。
-
-### 注意事项
-
-* 钩子实现需保持无状态：`static inline` 定义对每个编译单元私有，函数内静态变量会变成每个编译单元一份，而不是整个程序一份；若实现允许嵌套，解锁需恢复最外层状态
-* 临界区只覆盖按键状态更新，事件入队与事件回调都在临界区之外
+缓存不一致时屏障不够：共享数据要放在非缓存内存，或显式维护缓存。
 
 ## 使用方法
 
@@ -206,7 +135,7 @@ for (;;) {
 }
 ```
 
-`skey_scan()` 的返回值为因事件队列已满而丢弃的事件数，立即模式下恒为 0；同一分组中，`skey_scan()` 与 `skey_dispatch()` 各自只接受一个执行上下文，不同分组之间相互独立。这里扫描在中断中执行、分发在主循环中执行，因此锁钩子必须是中断安全的；若两者都放在主循环中执行，则可直接使用库内默认实现
+`skey_scan()` 的返回值为因事件队列已满而丢弃的事件数，立即模式下恒为 0；同一分组中，`skey_scan()` 与 `skey_dispatch()` 各自只接受一个执行上下文，不同分组之间相互独立。这里扫描在中断中执行、分发在主循环中执行；事件队列为单生产者单消费者，可直接使用库内默认实现
 
 ### 4. 选择时序参数
 

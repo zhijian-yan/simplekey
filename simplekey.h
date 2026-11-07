@@ -23,9 +23,9 @@
  * @brief Platform port header.
  *
  * Define this macro to the name of the header providing the platform hooks
- * (skey_lock() and skey_unlock()) when the port file lives outside the library
- * tree, for example -DSKEY_PORT_HEADER='"my_port.h"'. When it is not defined,
- * the shipped "simplekey_port.h" next to this header is used.
+ * (SKEY_ACQUIRE() and SKEY_RELEASE()) when the port file lives outside the
+ * library tree, for example -DSKEY_PORT_HEADER='"my_port.h"'. When it is not
+ * defined, the shipped "simplekey_port.h" next to this header is used.
  */
 #ifdef SKEY_PORT_HEADER
 #include SKEY_PORT_HEADER
@@ -308,9 +308,9 @@ void skey_init_group(skey_group_t *group, const skey_group_config_t *config);
  * @note Call this function periodically at a fixed period: press, release, long
  *       press and multi-press timeouts are all measured in ticks.
  * @note For a given group, only one execution context may call this function at
- *       a time: the key state update is protected by the lock abstraction,
- *       while enqueueing and the event callback run outside the critical
- *       section. Different groups are independent of each other.
+ *       a time: the key state is not internally synchronized and the event
+ *       queue is single-producer. Different groups are independent of each
+ *       other.
  */
 int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group);
 /**
