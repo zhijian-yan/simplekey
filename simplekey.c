@@ -67,12 +67,12 @@ static int skey_queue_receive(skey_queue_t *queue, skey_message_t *message) {
 }
 
 static uint8_t skey_scan_signal(skey_t *key, const skey_group_t *group,
-                                uint8_t level) {
+                                uint8_t pressed) {
     uint8_t events = 0;
     for (;;) {
         switch (skey_state_get(SKEY_SIG_SHIFT, SKEY_SIG_MASK)) {
             case SKEY_SIG_IDLE:
-                if (level == 0) {
+                if (pressed != 0) {
                     key->ticks = 0;
                     skey_state_set(SKEY_SIG_SHIFT, SKEY_SIG_MASK,
                                    SKEY_SIG_PRESS_DEBOUNCE);
@@ -82,7 +82,7 @@ static uint8_t skey_scan_signal(skey_t *key, const skey_group_t *group,
                 break;
             case SKEY_SIG_PRESS_DEBOUNCE:
                 if (key->ticks >= group->press_debounce_ticks) {
-                    if (level == 0) {
+                    if (pressed != 0) {
                         key->ticks = 0;
                         skey_state_set(SKEY_SIG_SHIFT, SKEY_SIG_MASK,
                                        SKEY_SIG_PRESSED);
@@ -94,7 +94,7 @@ static uint8_t skey_scan_signal(skey_t *key, const skey_group_t *group,
                     key->ticks += 1;
                 break;
             case SKEY_SIG_PRESSED:
-                if (level != 0) {
+                if (pressed == 0) {
                     key->ticks = 0;
                     skey_state_set(SKEY_SIG_SHIFT, SKEY_SIG_MASK,
                                    SKEY_SIG_RELEASE_DEBOUNCE);
@@ -106,7 +106,7 @@ static uint8_t skey_scan_signal(skey_t *key, const skey_group_t *group,
                 break;
             case SKEY_SIG_RELEASE_DEBOUNCE:
                 if (key->ticks >= group->release_debounce_ticks) {
-                    if (level != 0) {
+                    if (pressed == 0) {
                         key->ticks = 0;
                         skey_state_set(SKEY_SIG_SHIFT, SKEY_SIG_MASK,
                                        SKEY_SIG_RELEASED);
@@ -118,7 +118,7 @@ static uint8_t skey_scan_signal(skey_t *key, const skey_group_t *group,
                     key->ticks += 1;
                 break;
             case SKEY_SIG_RELEASED:
-                if (level == 0) {
+                if (pressed != 0) {
                     key->ticks = 0;
                     skey_state_set(SKEY_SIG_SHIFT, SKEY_SIG_MASK,
                                    SKEY_SIG_PRESS_DEBOUNCE);
@@ -245,10 +245,10 @@ int skey_scan(skey_t keys[], uint8_t key_count, skey_group_t *group) {
     int ret = 0;
     while (key_count > 0) {
         key_count -= 1;
-        uint8_t level = group->read_cb(keys[key_count].user_data);
+        uint8_t pressed = group->read_cb(keys[key_count].user_data);
         skey_message_t message;
         int lock_state = skey_lock();
-        message.events = skey_scan_signal(&keys[key_count], group, level);
+        message.events = skey_scan_signal(&keys[key_count], group, pressed);
         message.events =
             skey_gesture_proc(&keys[key_count], group, message.events);
         message.press_count = keys[key_count].press_count;

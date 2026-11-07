@@ -146,9 +146,9 @@ static volatile uint8_t click_count;
 
 extern int gpio_get_level(int pin); /* the GPIO read of the application */
 
-/* Return 0 when the key is pressed; user_data is the pin number */
+/* Return non-zero when the key is pressed; user_data is the pin number */
 static uint8_t key_read_cb(void *user_data) {
-    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 0 : 1;
+    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 1 : 0;
 }
 
 /* 1 = single click, 2 = double click, ... */
@@ -159,6 +159,8 @@ static void key_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
         click_count = press_count;
 }
 ```
+
+`key_read_cb()` returns the logical press state, not the raw pin level: non-zero means pressed and 0 means released. The example therefore inverts an active-low button; an active-high button can return the pin level directly.
 
 `events` is a bitwise OR of the `SKEY_EVENT_*` flags, so several events may arrive in one call and each has to be tested with `&`. The click count is resolved on `SKEY_EVENT_MULTI_RELEASE_TIMEOUT`, which is reported once the key has been released for longer than `multi_release_timeout_ticks`.
 
@@ -213,13 +215,13 @@ All durations are counted in ticks of the scan period. With a 10 ms scan period:
 
 | Field | Example | Meaning |
 | ----- | ------- | ------- |
-| `press_debounce_ticks` | 1 | The pressed level is confirmed about 10 ms after it is first sampled |
-| `release_debounce_ticks` | 1 | The released level is confirmed about 10 ms after it is first sampled |
+| `press_debounce_ticks` | 1 | The pressed state is confirmed about 10 ms after the press is first sampled |
+| `release_debounce_ticks` | 1 | The released state is confirmed about 10 ms after the release is first sampled |
 | `long_press_expired_ticks` | 100 | Long press reported 100 ticks (about 1 s) after the press is confirmed |
 | `multi_press_timeout_ticks` | 30 | Multi-press timeout reported 30 ticks (about 300 ms) after the press is confirmed |
 | `multi_release_timeout_ticks` | 30 | Click sequence resolved 30 ticks (about 300 ms) after the release is confirmed |
 
-Every threshold is counted from the moment the debounce is confirmed: the tick counter restarts at 1 in the scan that confirms it, so a threshold of N is reached after exactly N ticks. `long_press_expired_ticks = 100` therefore means 100 ticks after the press is confirmed. Measured from the level change itself, the total time is longer by the debounce, that is by `press_debounce_ticks` or `release_debounce_ticks` ticks.
+Every threshold is counted from the moment the debounce is confirmed: the tick counter restarts at 1 in the scan that confirms it, so a threshold of N is reached after exactly N ticks. `long_press_expired_ticks = 100` therefore means 100 ticks after the press is confirmed. Measured from the state change itself, the total time is longer by the debounce, that is by `press_debounce_ticks` or `release_debounce_ticks` ticks.
 
 ### 5. Complete example
 
@@ -239,9 +241,9 @@ static volatile uint8_t click_count;
 
 extern int gpio_get_level(int pin); /* the GPIO read of the application */
 
-/* Return 0 when the key is pressed; user_data is the pin number */
+/* Return non-zero when the key is pressed; user_data is the pin number */
 static uint8_t key_read_cb(void *user_data) {
-    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 0 : 1;
+    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 1 : 0;
 }
 
 /* 1 = single click, 2 = double click, ... */

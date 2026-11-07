@@ -66,11 +66,11 @@ extern "C" {
 
 /** Press debounce confirmed; the key is considered pressed. */
 #define SKEY_EVENT_PRESS_DEFER           (1U << 0)
-/** Level changed to pressed, before the debounce is confirmed. */
+/** Key became pressed, before the debounce is confirmed. */
 #define SKEY_EVENT_PRESS_EAGER           (1U << 1)
 /** Release debounce confirmed; the key is considered released. */
 #define SKEY_EVENT_RELEASE_DEFER         (1U << 2)
-/** Level changed to released, before the debounce is confirmed. */
+/** Key became released, before the debounce is confirmed. */
 #define SKEY_EVENT_RELEASE_EAGER         (1U << 3)
 /** The key stayed pressed for longer than long_press_expired_ticks. */
 #define SKEY_EVENT_LONG_PRESS            (1U << 4)
@@ -96,14 +96,16 @@ typedef enum {
 /**
  * @brief Debounce mode.
  *
- * Selects which of the events that the signal layer emits for one level change
- * the gesture layer reacts to. Press and release debouncing are configured
- * independently.
+ * Selects which of the events that the signal layer emits for a press or
+ * release the gesture layer reacts to. Press and release debouncing are
+ * configured independently.
  */
 typedef enum {
     /** React after the debounce is confirmed; more bounce-resistant. */
     SKEY_DEBOUNCE_MODE_DEFER = 0,
-    /** React immediately on the level change; lower latency, less filtering. */
+    /**
+     * React immediately on the state change; lower latency, less filtering.
+     */
     SKEY_DEBOUNCE_MODE_EAGER,
 } skey_debounce_mode_t;
 
@@ -176,15 +178,15 @@ typedef struct {
  * skey_init_group() rather than filling it in by hand.
  */
 typedef struct {
-    /** Read callback, called by skey_scan() for every key. */
+    /** Read callback, called by skey_scan(); non-zero means pressed. */
     uint8_t (*read_cb)(void *user_data);
     /** Event callback, called with the events of one key. */
     void (*event_cb)(uint8_t events, uint8_t press_count, void *user_data);
     /** Callback execution mode, copied from the configuration. */
     skey_callback_mode_t callback_mode;
-    /** How the gesture layer reacts to press level changes. */
+    /** How the gesture layer reacts to press state changes. */
     skey_debounce_mode_t press_debounce_mode;
-    /** How the gesture layer reacts to release level changes. */
+    /** How the gesture layer reacts to release state changes. */
     skey_debounce_mode_t release_debounce_mode;
     /** Press debounce duration in ticks (at least 1). */
     uint16_t press_debounce_ticks;
@@ -209,8 +211,10 @@ typedef struct {
  */
 typedef struct {
     /**
-     * Read callback, called by skey_scan(); it must return 0 when the key is
-     * pressed and non-zero when it is released.
+     * Read callback, called by skey_scan(); it must return the logical press
+     * state: non-zero while the key is pressed and 0 while it is released. The
+     * value is sampled on every scan, so it must stay non-zero while the key is
+     * held. An active-low button therefore has to be inverted here.
      */
     uint8_t (*read_cb)(void *user_data);
     /**
@@ -230,9 +234,9 @@ typedef struct {
      * [SKEY_MIN_QUEUE_SIZE, SKEY_MAX_QUEUE_SIZE].
      */
     uint16_t queue_size;
-    /** How the gesture layer reacts to press level changes. */
+    /** How the gesture layer reacts to press state changes. */
     skey_debounce_mode_t press_debounce_mode;
-    /** How the gesture layer reacts to release level changes. */
+    /** How the gesture layer reacts to release state changes. */
     skey_debounce_mode_t release_debounce_mode;
     /** Press debounce duration in ticks (at least 1). */
     uint16_t press_debounce_ticks;

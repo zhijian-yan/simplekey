@@ -145,9 +145,9 @@ static volatile uint8_t click_count;
 
 extern int gpio_get_level(int pin); /* 应用自己的 GPIO 读取函数 */
 
-/* 返回 0 表示按下；user_data 为按键的引脚号 */
+/* 返回非 0 表示按下；user_data 为按键的引脚号 */
 static uint8_t key_read_cb(void *user_data) {
-    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 0 : 1;
+    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 1 : 0;
 }
 
 /* 1 = 单击，2 = 双击，以此类推 */
@@ -158,6 +158,8 @@ static void key_event_cb(uint8_t events, uint8_t press_count, void *user_data) {
         click_count = press_count;
 }
 ```
+
+`key_read_cb()` 返回逻辑按下状态而非引脚原始电平：非 0 表示按下，0 表示释放。示例对低电平有效的按键做了取反；高电平有效的按键可直接返回电平值。
 
 `events` 为若干 `SKEY_EVENT_*` 标志的按位或，一次回调中可能同时携带多个事件，需逐个按位与判断。点击次数在 `SKEY_EVENT_MULTI_RELEASE_TIMEOUT` 中判定，该事件在按键释放超过 `multi_release_timeout_ticks` 后产生
 
@@ -212,13 +214,13 @@ for (;;) {
 
 | 字段 | 示例值 | 含义 |
 | ---- | ------ | ---- |
-| `press_debounce_ticks` | 1 | 采到按下电平后约 10ms 确认按下 |
-| `release_debounce_ticks` | 1 | 采到释放电平后约 10ms 确认释放 |
+| `press_debounce_ticks` | 1 | 首次采到按下状态后约 10ms 确认按下 |
+| `release_debounce_ticks` | 1 | 首次采到释放状态后约 10ms 确认释放 |
 | `long_press_expired_ticks` | 100 | 确认按下后再过 100 个 tick（约 1s）上报长按 |
 | `multi_press_timeout_ticks` | 30 | 确认按下后再过 30 个 tick（约 300ms）上报多击超时 |
 | `multi_release_timeout_ticks` | 30 | 确认释放后再过 30 个 tick（约 300ms）结算点击序列 |
 
-各阈值都从消抖确认的时刻开始计数：确认的那次扫描中 tick 计数被清零后又立即自增为 1，因此它等于“确认后已过的 tick 数”，阈值 N 就是确认后 N 个 tick 触发，`long_press_expired_ticks = 100` 即确认按下后再过 100 个 tick。若从电平跳变算起，实际时间还要再加上消抖本身，即多出 `press_debounce_ticks` 或 `release_debounce_ticks` 个 tick
+各阈值都从消抖确认的时刻开始计数：确认的那次扫描中 tick 计数被清零后又立即自增为 1，因此它等于“确认后已过的 tick 数”，阈值 N 就是确认后 N 个 tick 到达，`long_press_expired_ticks = 100` 即确认按下后再过 100 个 tick。若从状态跳变算起，实际时间还要再加上消抖本身，即多出 `press_debounce_ticks` 或 `release_debounce_ticks` 个 tick
 
 ### 5. 完整示例
 
@@ -238,9 +240,9 @@ static volatile uint8_t click_count;
 
 extern int gpio_get_level(int pin); /* 应用自己的 GPIO 读取函数 */
 
-/* 返回 0 表示按下；user_data 为按键的引脚号 */
+/* 返回非 0 表示按下；user_data 为按键的引脚号 */
 static uint8_t key_read_cb(void *user_data) {
-    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 0 : 1;
+    return (gpio_get_level((int)(intptr_t)user_data) == 0) ? 1 : 0;
 }
 
 /* 1 = 单击，2 = 双击，以此类推 */
